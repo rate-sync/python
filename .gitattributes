@@ -1,0 +1,2 @@
+# Mark .claude directory as documentation (exclude from language statistics)
+.claude/** linguist-documentation

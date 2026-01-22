@@ -211,6 +211,8 @@ __marimo__/
 .AppleDouble
 .LSOverride
 
-# Claude Code
-.claude/
+# Claude Code - ignore local settings, keep documentation
+.claude/config.json
+.claude/settings*.json
+.claude/context/
 .codex/
