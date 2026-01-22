@@ -13,6 +13,7 @@ from ratesync import acquire, configure_limiter, configure_store, get_limiter, i
 
 
 @pytest.mark.redis
+@pytest.mark.integration
 async def test_redis_rate_limiter():
     """Test Redis rate limiter with manual verification."""
     print("🧪 Testing Redis Rate Limiter\n")

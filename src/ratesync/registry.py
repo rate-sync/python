@@ -537,9 +537,7 @@ class RateLimiterRegistry:
         """
         return limiter_id in self._limiters
 
-    def get_limiter_config(
-        self, limiter_id: str
-    ) -> tuple[
+    def get_limiter_config(self, limiter_id: str) -> tuple[
         str,
         float | None,
         int | None,

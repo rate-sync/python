@@ -387,9 +387,9 @@ class TestRedisEnginePerformanceMocked:
             print(f"\nMocked Redis concurrent: {result}")
 
             # With 0.1ms mock latency, should still be fast
-            assert result.throughput > 1000, (
-                f"Concurrent throughput too low: {result.throughput:.0f}"
-            )
+            assert (
+                result.throughput > 1000
+            ), f"Concurrent throughput too low: {result.throughput:.0f}"
 
 
 @pytest.mark.skipif(not REDIS_ENGINE_AVAILABLE, reason="Redis engine not available")
@@ -495,9 +495,9 @@ class TestSlidingWindowPerformanceMocked:
 
             print(f"\nSliding window: {allowed_count}/{20} allowed (limit: {limit})")
 
-            assert allowed_count == limit, (
-                f"Wrong number allowed: {allowed_count} (expected {limit})"
-            )
+            assert (
+                allowed_count == limit
+            ), f"Wrong number allowed: {allowed_count} (expected {limit})"
 
             await limiter.disconnect()
 

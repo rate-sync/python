@@ -502,9 +502,9 @@ class TestDistributedCoordination:
 
             # Should enforce window limit across all instances (with tolerance for timing)
             # Due to network latency and Redis operation timing, we allow ±1 requests
-            assert abs(total_allowed - limit) <= 1, (
-                f"Wrong total: {total_allowed} (expected {limit}, tolerance ±1)"
-            )
+            assert (
+                abs(total_allowed - limit) <= 1
+            ), f"Wrong total: {total_allowed} (expected {limit}, tolerance ±1)"
 
         finally:
             for limiter in limiters:
