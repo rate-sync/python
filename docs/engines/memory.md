@@ -101,7 +101,6 @@ The Memory engine does **not** coordinate across:
 
 For distributed rate limiting, use:
 - [Redis Engine](redis.md) (recommended)
-- [NATS Engine](nats.md)
 - [PostgreSQL Engine](postgres.md)
 
 ## Migration to Distributed
@@ -113,18 +112,6 @@ For distributed rate limiting, use:
 [stores.prod]
 engine = "redis"
 url = "redis://localhost:6379/0"
-
-[limiters.api]
-store = "prod"
-rate_per_second = 10.0
-```
-
-### To NATS
-
-```toml
-[stores.prod]
-engine = "nats"
-url = "nats://localhost:4222"
 
 [limiters.api]
 store = "prod"
@@ -177,6 +164,5 @@ async with acquire("api"):
 ## See Also
 
 - [Redis Engine](redis.md) - Distributed alternative (recommended)
-- [NATS Engine](nats.md) - Distributed via NATS
 - [PostgreSQL Engine](postgres.md) - Database-backed alternative
 - [Configuration Guide](../configuration.md) - Complete configuration reference

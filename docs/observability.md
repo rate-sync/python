@@ -23,7 +23,7 @@ Each limiter exposes the following metrics via `RateLimiterMetrics`:
 | `avg_wait_time_ms` | float | Average wait time per acquisition |
 | `max_wait_time_ms` | float | Longest wait time observed |
 | `timeouts` | int | Number of failed `try_acquire()` calls |
-| `cas_failures` | int | Failed Compare-And-Set attempts (NATS only) |
+| `cas_failures` | int | Failed Compare-And-Set attempts |
 | `last_acquisition_at` | float | Unix timestamp of last successful slot |
 | `current_concurrent` | int | Current in-flight operations |
 | `max_concurrent_reached` | int | Times max concurrent limit was hit |
@@ -194,7 +194,7 @@ async def metrics():
 1. **Average Wait Time**: Line graph showing `ratesync_wait_ms` per limiter
 2. **Timeout Rate**: Rate of change of `ratesync_timeouts`
 3. **Concurrent Operations**: Current `ratesync_concurrent` vs configured max
-4. **CAS Failures** (NATS): Rate of `ratesync_cas_failures`
+4. **CAS Failures**: Rate of `ratesync_cas_failures`
 
 ## Alert Recommendations
 
@@ -235,7 +235,7 @@ async def metrics():
     summary: "Rate limiter {{ $labels.limiter }} is timing out"
 ```
 
-### CAS Failures (NATS)
+### CAS Failures
 
 | Condition | Severity | Action |
 |-----------|----------|--------|
@@ -275,10 +275,6 @@ Integration tests under `tests/integration/` validate cross-host guarantees for 
 # Redis
 export REDIS_URL="redis://localhost:6379/0"
 poetry run pytest -m "integration and redis"
-
-# NATS
-export NATS_INTEGRATION_URL="nats://localhost:4222"
-poetry run pytest -m "integration and nats"
 
 # PostgreSQL
 export POSTGRES_INTEGRATION_URL="postgresql://user:pass@localhost/db"
@@ -326,4 +322,3 @@ if metrics.current_concurrent > 0 and metrics.total_releases == metrics.total_ac
 - [Configuration Guide](configuration.md) - Configure limiters
 - [API Reference](api-reference.md) - Full API documentation
 - [Redis Engine](engines/redis.md) - Redis-specific monitoring
-- [NATS Engine](engines/nats.md) - NATS-specific CAS metrics

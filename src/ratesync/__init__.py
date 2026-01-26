@@ -1,11 +1,11 @@
 """rate-sync: Distributed rate limiter with coordinated synchronization.
 
 This package provides tools for distributed rate limiting using coordination
-via NATS Key-Value Store, in-memory, or other implementations.
+via Redis, PostgreSQL, or in-memory implementations.
 
 Features:
 - Abstract interface for multiple engine implementations
-- Distributed coordination across processes/containers (NATS, PostgreSQL, Redis)
+- Distributed coordination across processes/containers (PostgreSQL, Redis)
 - Local in-memory rate limiting for development (Memory)
 - Dual limiting strategies: rate limiting (req/sec) AND concurrency limiting (max_concurrent)
 - Separate store and limiter configuration
@@ -106,7 +106,6 @@ from ratesync.schemas import (
     RateLimitResult,
 )
 from ratesync.engines.memory import MemoryRateLimiter
-from ratesync.engines.nats import NatsKvRateLimiter
 
 # Composite rate limiting
 from ratesync.composite import (
@@ -150,7 +149,6 @@ __all__ = [
     "LimiterReadOnlyConfig",
     "LimiterState",
     # Engine implementations
-    "NatsKvRateLimiter",
     "MemoryRateLimiter",
     "PostgresRateLimiter",
     "RedisRateLimiter",

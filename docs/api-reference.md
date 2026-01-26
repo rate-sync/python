@@ -31,7 +31,7 @@ def configure_store(store_id: str, strategy: str, **kwargs) -> None
 | Parameter | Type | Description |
 |-----------|------|-------------|
 | `store_id` | str | Unique identifier for the store |
-| `strategy` | str | Engine type: `"memory"`, `"redis"`, `"nats"`, `"postgres"` |
+| `strategy` | str | Engine type: `"memory"`, `"redis"`, `"postgres"` |
 | `**kwargs` | Any | Engine-specific configuration options |
 
 **Engine-specific kwargs:**
@@ -40,7 +40,6 @@ def configure_store(store_id: str, strategy: str, **kwargs) -> None
 |--------|----------|----------|
 | `memory` | - | - |
 | `redis` | `url` | `db`, `password`, `key_prefix`, `pool_min_size`, `pool_max_size`, `timing_margin_ms`, `socket_timeout`, `socket_connect_timeout` |
-| `nats` | `url` | `token`, `bucket_name`, `auto_create`, `retry_interval`, `max_retries`, `timing_margin_ms` |
 | `postgres` | `url` | `table_name`, `schema_name`, `auto_create`, `pool_min_size`, `pool_max_size`, `timing_margin_ms` |
 
 **Example:**
@@ -57,14 +56,6 @@ configure_store(
     strategy="redis",
     url="redis://localhost:6379/0",
     pool_max_size=20,
-)
-
-# NATS store
-configure_store(
-    "nats",
-    strategy="nats",
-    url="nats://localhost:4222",
-    bucket_name="rate_limits",
 )
 
 # PostgreSQL store
@@ -525,7 +516,7 @@ class RateLimiterMetrics:
 | `total_wait_time_ms` | float | Total accumulated wait time |
 | `avg_wait_time_ms` | float | Average wait time per acquisition |
 | `max_wait_time_ms` | float | Maximum wait time recorded |
-| `cas_failures` | int | CAS failures (NATS only) |
+| `cas_failures` | int | CAS failures |
 | `timeouts` | int | Number of timeouts |
 | `last_acquisition_at` | float | Unix timestamp of last acquisition |
 | `current_concurrent` | int | Current in-flight operations |
@@ -578,21 +569,6 @@ class RedisEngineConfig:
     timing_margin_ms: float = 10.0
     socket_timeout: float = 5.0
     socket_connect_timeout: float = 5.0
-```
-
-#### NatsEngineConfig
-
-```python
-@dataclass
-class NatsEngineConfig:
-    url: str
-    engine: Literal["nats"] = "nats"
-    token: str | None = None
-    bucket_name: str = "rate_limits"
-    auto_create: bool = False
-    retry_interval: float = 0.05
-    max_retries: int = 100
-    timing_margin_ms: float = 10.0
 ```
 
 #### PostgresEngineConfig

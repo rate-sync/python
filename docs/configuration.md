@@ -17,7 +17,7 @@ This guide covers all configuration options for rate-sync, including TOML file c
 
 rate-sync uses a two-level architecture:
 
-1. **Stores**: Define the coordination mechanism (Memory, Redis, NATS, PostgreSQL)
+1. **Stores**: Define the coordination mechanism (Memory, Redis, PostgreSQL)
 2. **Limiters**: Define the rate limiting rules and reference a store
 
 This separation allows multiple limiters to share the same store connection.
@@ -188,20 +188,6 @@ pool_max_size = 10                       # Max connections
 timing_margin_ms = 10.0                  # Timing safety margin
 socket_timeout = 5.0                     # Socket timeout (seconds)
 socket_connect_timeout = 5.0             # Connection timeout (seconds)
-```
-
-### NATS Engine
-
-```toml
-[stores.nats]
-engine = "nats"
-url = "nats://localhost:4222"            # Required
-token = ""                               # Optional auth token
-bucket_name = "rate_limits"              # KV bucket name
-auto_create = false                      # Create bucket if missing
-retry_interval = 0.05                    # CAS retry interval
-max_retries = 100                        # Max CAS retries
-timing_margin_ms = 10.0                  # Timing safety margin
 ```
 
 ### PostgreSQL Engine

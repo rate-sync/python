@@ -267,7 +267,6 @@ socket_timeout = 10.0
 ## See Also
 
 - [Memory Engine](memory.md) - Development alternative
-- [NATS Engine](nats.md) - Alternative distributed engine
 - [PostgreSQL Engine](postgres.md) - Database-backed alternative
 - [Configuration Guide](../configuration.md) - Complete configuration reference
 - [Observability](../observability.md) - Monitoring and alerting

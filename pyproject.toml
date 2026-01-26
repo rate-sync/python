@@ -13,7 +13,7 @@ classifiers = [
   "Typing :: Typed",
 ]
 description = "File-based distributed rate limiter with declarative configuration"
-keywords = ["rate-limiting", "distributed-systems", "nats", "asyncio", "rate-limiter", "coordination"]
+keywords = ["rate-limiting", "distributed-systems", "asyncio", "rate-limiter", "coordination"]
 license = {text = "MIT"}
 name = "rate-sync"
 readme = "README.md"
@@ -36,12 +36,10 @@ tomli = "^2.0.0"
 
 # Optional dependencies for specific engines
 asyncpg = {version = "^0.30.0", optional = true}
-nats-py = {version = ">=2.9.0,<3.0.0", optional = true}
 redis = {version = "^5.0.0", extras = ["asyncio"], optional = true}
 
 [tool.poetry.extras]
-all = ["nats-py", "asyncpg", "redis"]
-nats = ["nats-py"]
+all = ["asyncpg", "redis"]
 postgres = ["asyncpg"]
 redis = ["redis"]
 
@@ -49,7 +47,6 @@ redis = ["redis"]
 # For development, install all engines
 asyncpg = "^0.30.0"
 black = "^24.10.0"
-nats-py = ">=2.9.0,<3.0.0"
 pylint = "^3.3.1"
 pytest = "^8.4.2"
 pytest-asyncio = "^0.24.0"
@@ -81,7 +78,6 @@ asyncio_mode = "auto"
 markers = [
   "postgres: marks tests that require PostgreSQL (deselect with '-m \"not postgres\"')",
   "redis: marks tests that require Redis (deselect with '-m \"not redis\"')",
-  "nats: marks tests that require NATS (deselect with '-m \"not nats\"')",
   "integration: marks tests that hit real infrastructure (deselect with '-m \"not integration\"')",
   "slow: marks tests as slow (deselect with '-m \"not slow\"')",
 ]

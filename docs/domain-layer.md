@@ -18,7 +18,6 @@ Domain logic does NOT depend on:
 - ❌ FastAPI
 - ❌ Redis
 - ❌ PostgreSQL
-- ❌ NATS
 - ❌ Any other infrastructure
 
 Domain logic CAN be used:

@@ -118,7 +118,7 @@ def validate_store_config(engine: str, params: dict[str, Any]) -> Any:
     """Validate store configuration parameters and return config dataclass instance.
 
     Args:
-        engine: Engine name (e.g., "nats", "memory")
+        engine: Engine name (e.g., "redis", "memory", "postgres")
         params: Configuration parameters as a dictionary
 
     Returns:

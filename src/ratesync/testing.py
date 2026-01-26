@@ -1,7 +1,7 @@
 """Testing utilities for rate-sync.
 
 This module provides utilities to help test code that uses rate limiting.
-All utilities are backend-agnostic and work with Memory, Redis, NATS, and PostgreSQL.
+All utilities are backend-agnostic and work with Memory, Redis, and PostgreSQL.
 
 Example:
     >>> from ratesync import get_limiter

@@ -31,7 +31,7 @@ This project adheres to a [Code of Conduct](CODE_OF_CONDUCT.md). By participatin
 - Python 3.11 or higher
 - Poetry (for dependency management)
 - Git
-- (Optional) Redis, NATS, or PostgreSQL for integration testing
+- (Optional) Redis or PostgreSQL for integration testing
 
 ### Quick Start
 
@@ -73,7 +73,7 @@ poetry install
 This installs:
 - Core dependencies
 - Development dependencies (pytest, ruff, mypy)
-- Optional dependencies (redis, nats, psycopg)
+- Optional dependencies (redis, psycopg)
 
 ### 3. Set Up Pre-commit Hooks (Optional but Recommended)
 
@@ -109,7 +109,7 @@ What you expected to happen.
 **Environment:**
 - rate-sync version: X.Y.Z
 - Python version: 3.X
-- Engine: (memory/redis/nats/postgres)
+- Engine: (memory/redis/postgres)
 - OS: (macOS/Linux/Windows)
 
 **Additional context**
@@ -561,7 +561,6 @@ rate-sync/
     engines/             # Backend implementations
       memory.py
       redis.py
-      nats.py
       postgres.py
     contrib/             # Framework integrations
       fastapi/           # FastAPI-specific

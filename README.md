@@ -31,7 +31,7 @@ rate-sync provides a simple, declarative API for rate limiting in Python applica
 - **Lazy Initialization**: Limiters auto-initialize on first use
 - **Dual Limiting Strategies**: Rate limiting (req/sec) AND concurrency limiting (max simultaneous)
 - **Multiple Algorithms**: Token bucket for throughput, sliding window for auth protection
-- **Multiple Engines**: Memory, Redis, NATS, PostgreSQL
+- **Multiple Engines**: Memory, Redis, PostgreSQL
 - **FastAPI Integration**: Dependencies, middleware, and exception handlers
 - **Async-First**: Built for modern Python with full asyncio support
 - **Type Safe**: Complete type hints throughout
@@ -45,7 +45,7 @@ rate-sync provides a simple, declarative API for rate limiting in Python applica
 pip install rate-sync[all]
 ```
 
-Installs all engines: **Memory**, **Redis**, **NATS**, and **PostgreSQL**.
+Installs all engines: **Memory**, **Redis**, and **PostgreSQL**.
 
 ### Minimal (Memory engine only)
 
@@ -61,14 +61,11 @@ Perfect for development, testing, or single-process applications.
 # Redis engine (recommended for production)
 pip install rate-sync[redis]
 
-# NATS engine
-pip install rate-sync[nats]
-
 # PostgreSQL engine
 pip install rate-sync[postgres]
 
 # Multiple engines
-pip install rate-sync[redis,nats]
+pip install rate-sync[redis,postgres]
 ```
 
 ### With Poetry
@@ -81,13 +78,12 @@ poetry add rate-sync[redis]    # Redis engine
 
 **Engine Dependencies:**
 
-| Installation | Memory | Redis | NATS | PostgreSQL |
-|--------------|--------|-------|------|------------|
-| `rate-sync` | Yes | - | - | - |
-| `rate-sync[redis]` | Yes | Yes | - | - |
-| `rate-sync[nats]` | Yes | - | Yes | - |
-| `rate-sync[postgres]` | Yes | - | - | Yes |
-| `rate-sync[all]` | Yes | Yes | Yes | Yes |
+| Installation | Memory | Redis | PostgreSQL |
+|--------------|--------|-------|------------|
+| `rate-sync` | Yes | - | - |
+| `rate-sync[redis]` | Yes | Yes | - |
+| `rate-sync[postgres]` | Yes | - | Yes |
+| `rate-sync[all]` | Yes | Yes | Yes |
 
 ## Quick Start
 
@@ -152,7 +148,6 @@ Stores define **how** rate limiting is coordinated:
 |--------|----------|--------------|
 | `memory` | Development, single-process | Local only |
 | `redis` | Production (recommended) | Distributed |
-| `nats` | Production with NATS infrastructure | Distributed |
 | `postgres` | Production with existing PostgreSQL | Distributed |
 
 ### Limiters
@@ -221,18 +216,6 @@ url = "redis://localhost:6379/0"
 ```
 
 [Full documentation](https://github.com/zyc/rate-sync/blob/main/docs/engines/redis.md)
-
-### NATS
-
-Distributed coordination via JetStream KV:
-
-```toml
-[stores.nats]
-engine = "nats"
-url = "nats://localhost:4222"
-```
-
-[Full documentation](https://github.com/zyc/rate-sync/blob/main/docs/engines/nats.md)
 
 ### PostgreSQL
 
@@ -445,7 +428,6 @@ poetry run pytest --cov=ratesync
 
 # Specific engine tests
 poetry run pytest -m redis
-poetry run pytest -m nats
 poetry run pytest -m postgres
 ```
 
@@ -455,10 +437,6 @@ poetry run pytest -m postgres
 # Redis integration
 export REDIS_URL="redis://localhost:6379/0"
 poetry run pytest -m "integration and redis"
-
-# NATS integration
-export NATS_INTEGRATION_URL="nats://localhost:4222"
-poetry run pytest -m "integration and nats"
 
 # PostgreSQL integration
 export POSTGRES_INTEGRATION_URL="postgresql://user:pass@localhost/db"

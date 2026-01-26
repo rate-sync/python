@@ -6,6 +6,6 @@ used by different store implementations.
 
 # Future backend-specific base classes can be added here
 # For example:
-# - KeyValueBackend (for Redis, NATS KV, etc.)
+# - KeyValueBackend (for Redis, etc.)
 # - DatabaseBackend (for PostgreSQL, MySQL, etc.)
 # - MemoryBackend (for in-memory/local rate limiting)

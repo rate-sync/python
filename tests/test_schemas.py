@@ -12,7 +12,6 @@ from ratesync.schemas import (
     ENGINE_SCHEMAS,
     LimiterConfig,
     MemoryEngineConfig,
-    NatsEngineConfig,
     PostgresEngineConfig,
     RedisEngineConfig,
 )
@@ -219,7 +218,6 @@ class TestEngineSchemas:
     def test_engine_schemas_registry(self):
         """Test that ENGINE_SCHEMAS contains all expected engines."""
         assert "memory" in ENGINE_SCHEMAS
-        assert "nats" in ENGINE_SCHEMAS
         assert "postgres" in ENGINE_SCHEMAS
         assert "redis" in ENGINE_SCHEMAS
 
@@ -228,18 +226,6 @@ class TestEngineSchemas:
         config = MemoryEngineConfig()
 
         assert config.engine == "memory"
-
-    def test_nats_config_defaults(self):
-        """Test NatsEngineConfig with required url."""
-        config = NatsEngineConfig(url="nats://localhost:4222")
-
-        assert config.url == "nats://localhost:4222"
-        assert config.engine == "nats"
-        assert config.token is None
-        assert config.bucket_name == "rate_limits"
-        assert config.auto_create is False
-        assert config.retry_interval == 0.05
-        assert config.max_retries == 100
 
     def test_postgres_config_defaults(self):
         """Test PostgresEngineConfig with required url."""

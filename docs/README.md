@@ -15,7 +15,6 @@ Choose the right engine for your use case:
 
 - [Memory Engine](engines/memory.md) - In-memory rate limiting (development, single-process)
 - [Redis Engine](engines/redis.md) - High-performance distributed (recommended for production)
-- [NATS Engine](engines/nats.md) - Distributed via JetStream KV
 - [PostgreSQL Engine](engines/postgres.md) - Database-backed coordination
 
 ### Integrations
@@ -42,7 +41,6 @@ Choose the right engine for your use case:
 |----------|-------------------|---------------|
 | Development/Testing | Memory | [Memory Engine](engines/memory.md) |
 | Production (recommended) | Redis | [Redis Engine](engines/redis.md) |
-| NATS infrastructure | NATS | [NATS Engine](engines/nats.md) |
 | Existing PostgreSQL | PostgreSQL | [PostgreSQL Engine](engines/postgres.md) |
 
 ### By Algorithm
@@ -89,7 +87,6 @@ await acquire("api")
 
 - **Memory**: Development and single-process
 - **Redis**: Production with Redis
-- **NATS**: Production with NATS infrastructure
 - **PostgreSQL**: Production with existing database
 
 ### Built-in Observability
@@ -120,14 +117,14 @@ print(f"Avg wait: {metrics.avg_wait_time_ms}ms")
                                   v
                     +-------------+-------------+
                     |      Coordination Store   |
-                    |   (Redis / NATS / Postgres)  |
+                    |    (Redis / PostgreSQL)   |
                     +---------------------------+
 ```
 
 The architecture separates **stores** (coordination mechanism) from **limiters** (rate limit rules), allowing:
 
 - Multiple limiters to share one store
-- Easy switching between development (memory) and production (Redis/NATS)
+- Easy switching between development (memory) and production (Redis/PostgreSQL)
 - Clear separation of concerns
 
 ---

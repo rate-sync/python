@@ -1,7 +1,7 @@
 """Global registry for managing backends and rate limiters.
 
 This module provides a centralized registry with dual storage:
-- Stores: reusable connection configurations (NATS, Memory, Redis, etc.)
+- Stores: reusable connection configurations (Memory, Redis, PostgreSQL, etc.)
 - Limiters: rate limiter instances that reference a backend
 
 This separation allows multiple limiters to share the same backend connection.
@@ -12,7 +12,6 @@ from typing import Any
 
 from ratesync.core import RateLimiter
 from ratesync.engines.memory import MemoryRateLimiter
-from ratesync.engines.nats import NatsKvRateLimiter
 from ratesync.exceptions import (
     LimiterNotFoundError,
     RateLimiterAcquisitionError,
@@ -45,7 +44,6 @@ logger = logging.getLogger(__name__)
 
 # Strategy name to implementation class mapping
 ENGINE_CLASSES: dict[str, type[RateLimiter] | None] = {
-    "nats": NatsKvRateLimiter,
     "memory": MemoryRateLimiter,
     "postgres": PostgresRateLimiter,  # May be None if asyncpg not installed
     "redis": RedisRateLimiter,  # May be None if redis not installed
@@ -62,7 +60,7 @@ class RateLimiterRegistry:
     Example:
         >>> registry = RateLimiterRegistry()
         >>> # Configure store
-        >>> registry.configure_backend("prod", strategy="nats", url="nats://prod")
+        >>> registry.configure_backend("prod", strategy="redis", url="redis://prod")
         >>>
         >>> # Configure limiter with rate limiting only
         >>> registry.configure_limiter("payments", backend="prod", rate_per_second=1.0)
@@ -105,8 +103,8 @@ class RateLimiterRegistry:
         """Configure a backend with specific strategy.
 
         Args:
-            store_id: Unique identifier for this backend (e.g., "prod_nats")
-            strategy: Strategy name ("nats", "memory", etc.)
+            store_id: Unique identifier for this backend (e.g., "prod_redis")
+            strategy: Strategy name ("memory", "redis", "postgres")
             **kwargs: Strategy-specific configuration parameters
 
         Raises:
@@ -114,7 +112,7 @@ class RateLimiterRegistry:
 
         Example:
             >>> registry.configure_backend(
-            ...     "prod", strategy="nats", url="nats://prod.example.com"
+            ...     "prod", strategy="redis", url="redis://prod.example.com"
             ... )
         """
         # Validate and create config dataclass
@@ -498,7 +496,7 @@ class RateLimiterRegistry:
 
         Example:
             >>> registry.list_backends()
-            {'prod_nats': {'strategy': 'nats', 'url': 'nats://...', 'initialized': False}}
+            {'prod_redis': {'strategy': 'redis', 'url': 'redis://...', 'initialized': False}}
         """
         result = {}
 
@@ -572,7 +570,7 @@ class RateLimiterRegistry:
 
         Example:
             >>> registry.list_limiters()
-            {'payments': {'backend': 'prod_nats', 'rate': 1.0, 'max_concurrent': 5}}
+            {'payments': {'backend': 'prod_redis', 'rate': 1.0, 'max_concurrent': 5}}
         """
         result = {}
 
@@ -620,11 +618,11 @@ def configure_store(store_id: str, strategy: str, **kwargs: Any) -> None:
 
     Args:
         store_id: Unique identifier for this backend
-        strategy: Strategy name ("nats", "memory", etc.)
+        strategy: Strategy name ("memory", "redis", "postgres")
         **kwargs: Strategy-specific configuration parameters
 
     Example:
-        >>> configure_store("prod", strategy="nats", url="nats://prod.example.com")
+        >>> configure_store("prod", strategy="redis", url="redis://prod.example.com")
     """
     _registry.configure_store(store_id, strategy, **kwargs)
 
@@ -1135,7 +1133,7 @@ def list_stores() -> dict[str, dict[str, Any]]:
 
     Example:
         >>> list_stores()
-        {'prod_nats': {'engine': 'nats', 'url': 'nats://...', ...}}
+        {'prod_redis': {'engine': 'redis', 'url': 'redis://...', ...}}
     """
     return _registry.list_stores()
 
@@ -1148,7 +1146,7 @@ def list_limiters() -> dict[str, dict[str, Any]]:
 
     Example:
         >>> list_limiters()
-        {'payments': {'backend': 'prod_nats', 'rate_per_second': 1.0, ...}}
+        {'payments': {'backend': 'prod_redis', 'rate_per_second': 1.0, ...}}
     """
     return _registry.list_limiters()
 

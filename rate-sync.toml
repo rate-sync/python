@@ -4,11 +4,6 @@
 [stores.local_memory]
 engine = "memory"
 
-[stores.test_nats]
-engine = "nats"
-url = "${NATS_URL:-nats://localhost:4222}"
-bucket_name = "test_rate_limits"
-
 [limiters.api_payments]
 store = "local_memory"
 rate_per_second = 1.0

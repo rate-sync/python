@@ -123,8 +123,8 @@ def _expand_env_vars(obj: Any) -> Any:
         Object with environment variables expanded and types converted
 
     Example:
-        >>> _expand_env_vars("nats://${NATS_HOST}:4222")
-        "nats://localhost:4222"  # If NATS_HOST=localhost
+        >>> _expand_env_vars("redis://${REDIS_HOST}:6379")
+        "redis://localhost:6379"  # If REDIS_HOST=localhost
         >>> _expand_env_vars("${RATE:-1.0}")
         1.0  # Converted to float
         >>> _expand_env_vars("${PORT:-8000}")
@@ -423,15 +423,15 @@ def load_config(config_path: str | Path) -> None:
     - [fastapi]: FastAPI integration settings (optional)
 
     Example TOML:
-        [stores.prod_nats]
-        engine = "nats"
-        url = "${NATS_URL}"
+        [stores.prod_redis]
+        engine = "redis"
+        url = "${REDIS_URL}"
 
         [stores.local]
         engine = "memory"
 
         [limiters.payments]
-        store = "prod_nats"
+        store = "prod_redis"
         rate_per_second = 1.0
         timeout = 30.0
 

@@ -2,7 +2,7 @@
 Configuration schemas for rate limiter stores and limiters.
 
 This module defines the configuration structures using dataclasses for type safety
-and clear documentation. Each engine (NATS, Memory, etc.) defines its own config schema.
+and clear documentation. Each engine (Memory, Redis, PostgreSQL) defines its own config schema.
 
 Also includes result types for rate limit checks.
 """
@@ -12,32 +12,6 @@ from __future__ import annotations
 import time
 from dataclasses import dataclass, field
 from typing import Literal
-
-
-@dataclass
-class NatsEngineConfig:
-    """Configuration for NATS KV-based rate limiting engine.
-
-    Attributes:
-        url: NATS server URL (supports env var expansion via ${VAR})
-        engine: Engine identifier (always "nats")
-        token: Optional authentication token
-        bucket_name: KV bucket name for storing rate limit state
-        auto_create: If True, automatically creates KV bucket on initialize()
-                    If False, requires pre-created bucket (safer for production)
-        retry_interval: Seconds to wait between CAS retry attempts
-        max_retries: Maximum number of CAS retry attempts
-        timing_margin_ms: Safety margin in milliseconds for timing calculations
-    """
-
-    url: str
-    engine: Literal["nats"] = "nats"
-    token: str | None = None
-    bucket_name: str = "rate_limits"
-    auto_create: bool = False
-    retry_interval: float = 0.05
-    max_retries: int = 100
-    timing_margin_ms: float = 10.0
 
 
 @dataclass
@@ -289,7 +263,6 @@ class LimiterState:
 
 # Registry mapping engine names to their config classes
 ENGINE_SCHEMAS: dict[str, type] = {
-    "nats": NatsEngineConfig,
     "memory": MemoryEngineConfig,
     "postgres": PostgresEngineConfig,
     "redis": RedisEngineConfig,

@@ -1,7 +1,7 @@
 """Core abstractions and base types for distributed rate limiting.
 
 This module defines the generic interface for rate limiting implementations,
-supporting different stores (NATS KV, Redis, PostgreSQL, etc).
+supporting different stores (Redis, PostgreSQL, Memory, etc).
 """
 
 import time
@@ -26,7 +26,7 @@ class RateLimiterMetrics:
         total_wait_time_ms: Total accumulated wait time (ms)
         avg_wait_time_ms: Average wait time per acquisition (ms)
         max_wait_time_ms: Maximum wait time recorded (ms)
-        cas_failures: Number of CAS (Compare-And-Set) failures - NATS specific
+        cas_failures: Number of CAS (Compare-And-Set) failures
         timeouts: Number of timeouts in try_acquire()
         last_acquisition_at: Timestamp of last successful acquisition
         current_concurrent: Current number of concurrent operations in-flight
@@ -175,7 +175,7 @@ class RateLimiter(ABC):
 
         Note:
             Some metrics may be implementation-specific
-            (e.g., cas_failures is specific to NATS KV).
+            (e.g., cas_failures may vary by backend).
         """
 
     @property
@@ -254,7 +254,7 @@ class RateLimiter(ABC):
     def fail_closed(self) -> bool:
         """Behavior when backend fails.
 
-        If True (fail_closed), blocks requests when the backend (Redis, NATS, etc.)
+        If True (fail_closed), blocks requests when the backend (Redis, PostgreSQL, etc.)
         fails, raising RateLimiterAcquisitionError.
 
         If False (fail_open, default), allows requests to proceed when the backend
@@ -271,7 +271,7 @@ class RateLimiter(ABC):
 
         Args:
             config: Engine-specific configuration dataclass
-            **kwargs: Additional runtime parameters (e.g., jetstream for NATS)
+            **kwargs: Additional runtime parameters
 
         Returns:
             Instance of the rate limiter

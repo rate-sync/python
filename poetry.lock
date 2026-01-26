@@ -404,22 +404,6 @@ files = [
 ]
 
 [[package]]
-name = "nats-py"
-version = "2.12.0"
-description = "NATS client for Python"
-optional = false
-python-versions = ">=3.7"
-groups = ["main", "dev"]
-files = [
-    {file = "nats_py-2.12.0.tar.gz", hash = "sha256:2981ca4b63b8266c855573fa7871b1be741f1889fd429ee657e5ffc0971a38a1"},
-]
-
-[package.extras]
-aiohttp = ["aiohttp"]
-fast-parse = ["fast-mail-parser"]
-nkeys = ["nkeys"]
-
-[[package]]
 name = "packaging"
 version = "25.0"
 description = "Core utilities for Python packages"
@@ -910,12 +894,11 @@ files = [
 typing-extensions = ">=4.12.0"
 
 [extras]
-all = ["asyncpg", "nats-py", "redis"]
-nats = ["nats-py"]
+all = ["asyncpg", "redis"]
 postgres = ["asyncpg"]
 redis = ["redis"]
 
 [metadata]
 lock-version = "2.1"
 python-versions = ">=3.12,<4.0"
-content-hash = "b793e191cb6ed3b4b4f62bd932f0300673e9998b6bc0c9030ed7ea7c16c54ac7"
+content-hash = "97965996344aff85e8967303964daf9985aa2c5cfa25ec708a9f3f93d5235de7"

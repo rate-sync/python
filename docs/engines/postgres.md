@@ -15,7 +15,7 @@ The PostgreSQL engine stores rate limit state in a PostgreSQL database table, us
 
 **Best for:**
 - Applications already using PostgreSQL
-- Environments where Redis/NATS isn't available
+- Environments where Redis isn't available
 - Simple deployments with existing database
 
 ## Installation
@@ -270,6 +270,5 @@ timeout = 30.0
 
 - [Memory Engine](memory.md) - Development alternative
 - [Redis Engine](redis.md) - Higher-performance distributed engine
-- [NATS Engine](nats.md) - Alternative distributed engine
 - [Configuration Guide](../configuration.md) - Complete configuration reference
 - [Observability](../observability.md) - Monitoring and alerting

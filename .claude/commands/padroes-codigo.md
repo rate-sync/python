@@ -5,7 +5,7 @@ Revise o codigo seguindo os padroes do projeto.
 ## Clean Architecture
 
 - **domain/**: Entidades, Value Objects, Repositorios (ABC), Services
-- **infrastructure/**: Implementacoes Redis, NATS, PostgreSQL, Memory backends
+- **infrastructure/**: Implementacoes Redis, PostgreSQL, Memory backends
 
 Dependencias fluem de fora para dentro. Domain NAO depende de infrastructure.
 

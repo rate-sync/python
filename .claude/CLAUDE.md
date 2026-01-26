@@ -1,133 +1,134 @@
-# Instruções para Agentes de IA - rate-sync
+# AI Agent Instructions - rate-sync
 
-## Tipo de Projeto
+## Language Policy
 
-**Biblioteca Python open-source** - Rate limiter distribuído zero-config.
+**IMPORTANT: This is an open-source project. All code, comments, documentation, commit messages, and PR descriptions MUST be written in English.**
 
-Publicado como **rate-sync** no PyPI. Suporta múltiplos backends: Redis, NATS, PostgreSQL, memória.
+## Project Type
 
-## Links Importantes
+**Python open-source library** - Distributed rate limiter with declarative configuration.
+
+Published as **rate-sync** on PyPI. Supports multiple backends: Redis, PostgreSQL, Memory.
+
+## Important Links
 
 - **PyPI**: https://pypi.org/project/rate-sync/
 - **GitHub**: https://github.com/zyc/rate-sync
 - **Issues**: https://github.com/zyc/rate-sync/issues
 
-## Gerenciamento de Dependências Python
+## Python Dependency Management
 
-**SEMPRE use Poetry. NUNCA use pip, uv, pipenv, conda.**
+**ALWAYS use Poetry. NEVER use pip, uv, pipenv, conda.**
 
 ```bash
-poetry install          # Instalar dependências
-poetry add <pacote>     # Adicionar dependência
-poetry run <comando>    # Executar no ambiente virtual
-poetry run pytest       # Executar testes
+poetry install          # Install dependencies
+poetry add <package>    # Add dependency
+poetry run <command>    # Run in virtual environment
+poetry run pytest       # Run tests
 ```
 
-## Estrutura do Projeto
+## Project Structure
 
 ```
 rate-sync/
-├── src/ratesync/           # Código fonte
-│   ├── engines/            # Implementações de backends
-│   ├── contrib/            # Integrações (FastAPI, Prometheus)
-│   └── domain/             # Value objects e domain layer
-├── tests/                  # Testes
-│   ├── unit/              # Testes unitários
-│   ├── integration/       # Testes de integração (requerem infra)
-│   └── manual/            # Testes manuais
-├── docs/                   # Documentação
-└── examples/              # Exemplos de uso
+├── src/ratesync/           # Source code
+│   ├── engines/            # Backend implementations
+│   ├── contrib/            # Integrations (FastAPI, Prometheus)
+│   └── domain/             # Value objects and domain layer
+├── tests/                  # Tests
+│   ├── unit/              # Unit tests
+│   ├── integration/       # Integration tests (require infra)
+│   └── manual/            # Manual tests
+├── docs/                   # Documentation
+└── examples/              # Usage examples
 ```
 
-## Padrões de Código
+## Code Standards
 
-### Princípios Obrigatórios
+### Mandatory Principles
 
-- **Clean Architecture**: domain/ (entidades, repositórios ABC) -> infrastructure/ (implementações)
-- **SOLID**: Injeção de dependência explícita, sem defaults em construtores
-- **KISS**: Mínimo necessário para a tarefa atual
-- **DRY**: Evite duplicação, mas não abstraia prematuramente
+- **Clean Architecture**: domain/ (entities, repository ABCs) -> infrastructure/ (implementations)
+- **SOLID**: Explicit dependency injection, no defaults in constructors
+- **KISS**: Minimum necessary for the current task
+- **DRY**: Avoid duplication, but don't abstract prematurely
 
-### Convenções Python
+### Python Conventions
 
-- Type hints obrigatórios (usar `T | None`, não `Optional[T]`)
-- Docstrings Google Style
-- snake_case (funções), PascalCase (classes)
-- Imports: `from __future__ import annotations` no topo
+- Type hints required (use `T | None`, not `Optional[T]`)
+- Google Style docstrings
+- snake_case (functions), PascalCase (classes)
+- Imports: `from __future__ import annotations` at the top
 
-### Organização de `__init__.py` e Imports
+### `__init__.py` Organization and Imports
 
-**Regra fundamental**: Barrel exports apenas nas pastas arquiteturais intermediárias.
+**Fundamental rule**: Barrel exports only in intermediate architectural folders.
 
-| Nível | Exemplo | `__init__.py` |
+| Level | Example | `__init__.py` |
 |-------|---------|---------------|
-| Base arquitetural | `domain/`, `engines/` | **NÃO** |
-| Intermediário | `domain/value_objects/`, `engines/` | **SIM** (barrel exports) |
-| Feature | `engines/redis/` | **NÃO** |
+| Architectural base | `domain/`, `engines/` | **NO** |
+| Intermediate | `domain/value_objects/`, `engines/` | **YES** (barrel exports) |
+| Feature | `engines/redis/` | **NO** |
 
-**Estrutura de pastas**:
+**Folder structure**:
 ```
 engines/
-├── __init__.py              # SIM - barrel exports de TODOS os engines
+├── __init__.py              # YES - barrel exports for ALL engines
 ├── redis.py
-├── nats.py
 ├── postgres.py
 └── memory.py
 ```
 
-**O `__init__.py` intermediário faz re-export de TODOS os engines**:
+**The intermediate `__init__.py` re-exports ALL engines**:
 ```python
 # engines/__init__.py
 from engines.redis import RedisEngine
 from engines.memory import MemoryEngine
-from engines.nats import NATSEngine
 from engines.postgres import PostgresEngine
 
-__all__ = ["RedisEngine", "MemoryEngine", "NATSEngine", "PostgresEngine"]
+__all__ = ["RedisEngine", "MemoryEngine", "PostgresEngine"]
 ```
 
-**Imports SEMPRE via barrel export intermediário**:
+**Imports ALWAYS via intermediate barrel export**:
 ```python
-# CORRETO - usa barrel export
+# CORRECT - uses barrel export
 from ratesync.engines import RedisEngine, MemoryEngine
 
-# ERRADO - import direto do arquivo
+# WRONG - direct import from file
 from ratesync.engines.redis import RedisEngine
 ```
 
-**Benefícios**:
-- Imports curtos e limpos
-- Encapsulamento da estrutura interna
-- Facilita refatoração (mover arquivos não quebra imports externos)
+**Benefits**:
+- Short and clean imports
+- Internal structure encapsulation
+- Easier refactoring (moving files doesn't break external imports)
 
-**Exceção**: Import direto do arquivo é permitido APENAS para evitar referência circular.
+**Exception**: Direct file import is allowed ONLY to avoid circular references.
 
-## Testes
+## Tests
 
-### Marcadores de Teste
+### Test Markers
 
 ```python
-@pytest.mark.redis          # Requer Redis
-@pytest.mark.nats           # Requer NATS
-@pytest.mark.postgres       # Requer PostgreSQL
-@pytest.mark.integration    # Requer infraestrutura externa
-@pytest.mark.slow           # Teste demorado
+@pytest.mark.redis          # Requires Redis
+@pytest.mark.postgres       # Requires PostgreSQL
+@pytest.mark.integration    # Requires external infrastructure
+@pytest.mark.slow           # Slow test
 ```
 
-### Executar Testes
+### Running Tests
 
 ```bash
-# Todos os testes (exceto integração)
+# All tests (except integration)
 poetry run pytest -m "not integration"
 
-# Apenas testes unitários rápidos
+# Fast unit tests only
 poetry run pytest -m "not integration and not slow"
 
-# Testes de um engine específico (requer infraestrutura)
+# Tests for a specific engine (requires infrastructure)
 export REDIS_URL="redis://localhost:6379/0"
 poetry run pytest -m redis
 
-# Com coverage
+# With coverage
 poetry run pytest --cov=ratesync --cov-report=term
 ```
 
@@ -135,23 +136,23 @@ poetry run pytest --cov=ratesync --cov-report=term
 
 ### GitHub Actions
 
-O projeto usa GitHub Actions para CI/CD:
+The project uses GitHub Actions for CI/CD:
 
-- **test.yml**: Executa testes em Python 3.12 e 3.13
-- **publish.yml**: Publica no PyPI em releases
+- **test.yml**: Runs tests on Python 3.12 and 3.13
+- **publish.yml**: Publishes to PyPI on releases
 
-### Fluxo de Release
+### Release Flow
 
-1. Atualizar versão em `pyproject.toml`
-2. Atualizar `CHANGELOG.md`
+1. Update version in `pyproject.toml`
+2. Update `CHANGELOG.md`
 3. Commit: `git commit -m "chore: bump version to X.Y.Z"`
 4. Tag: `git tag -a vX.Y.Z -m "Release X.Y.Z"`
 5. Push: `git push && git push --tags`
-6. Criar release no GitHub (dispara publicação no PyPI)
+6. Create release on GitHub (triggers PyPI publication)
 
-## Desenvolvimento
+## Development
 
-### Setup Inicial
+### Initial Setup
 
 ```bash
 git clone https://github.com/zyc/rate-sync.git
@@ -163,26 +164,21 @@ poetry run pytest
 ### Code Quality
 
 ```bash
-# Formatação
+# Formatting
 poetry run black src/ratesync tests
 
 # Linting
 poetry run ruff check src/ratesync
 
-# Type checking (se mypy estiver configurado)
+# Type checking (if mypy is configured)
 poetry run mypy src/ratesync
 ```
 
-### Infraestrutura Local para Testes
+### Local Infrastructure for Tests
 
 **Redis:**
 ```bash
 docker run -d -p 6379:6379 redis:alpine
-```
-
-**NATS:**
-```bash
-docker run -d -p 4222:4222 nats:alpine -js
 ```
 
 **PostgreSQL:**
@@ -190,84 +186,83 @@ docker run -d -p 4222:4222 nats:alpine -js
 docker run -d -p 5432:5432 -e POSTGRES_PASSWORD=test postgres:alpine
 ```
 
-## Contribuindo
+## Contributing
 
-### Antes de Abrir PR
+### Before Opening a PR
 
-1. ✅ Testes passando (`poetry run pytest -m "not integration"`)
-2. ✅ Código formatado (`poetry run black .`)
-3. ✅ Linting limpo (`poetry run ruff check .`)
-4. ✅ Type hints completos
-5. ✅ Docstrings atualizadas
-6. ✅ CHANGELOG.md atualizado (se aplicável)
+1. Tests passing (`poetry run pytest -m "not integration"`)
+2. Code formatted (`poetry run black .`)
+3. Clean linting (`poetry run ruff check .`)
+4. Complete type hints
+5. Updated docstrings
+6. Updated CHANGELOG.md (if applicable)
 
 ### Commit Messages
 
-Seguir [Conventional Commits](https://www.conventionalcommits.org/):
+Follow [Conventional Commits](https://www.conventionalcommits.org/):
 
 ```
 feat: add support for Redis Cluster
 fix: correct token bucket calculation
 docs: update FastAPI integration guide
-test: add tests for NATS engine
+test: add tests for PostgreSQL engine
 chore: bump dependencies
 ```
 
-## Arquitetura
+## Architecture
 
 ### Engines (Backends)
 
-Cada engine implementa a interface `BaseEngine`:
+Each engine implements the `BaseEngine` interface:
 
-- `MemoryEngine`: Backend em memória (single-process)
-- `RedisEngine`: Backend Redis (distribuído)
-- `NATSEngine`: Backend NATS JetStream (distribuído)
-- `PostgresEngine`: Backend PostgreSQL (distribuído)
+- `MemoryEngine`: In-memory backend (single-process)
+- `RedisEngine`: Redis backend (distributed)
+- `PostgresEngine`: PostgreSQL backend (distributed)
 
-### Algoritmos
+### Algorithms
 
-- **Token Bucket**: Controla throughput (rate_per_second)
-- **Sliding Window**: Conta requests em janela de tempo (limit + window_seconds)
+- **Token Bucket**: Controls throughput (rate_per_second)
+- **Sliding Window**: Counts requests in time window (limit + window_seconds)
 
 ### FastAPI Integration
 
-Disponível em `ratesync.contrib.fastapi`:
+Available in `ratesync.contrib.fastapi`:
 
-- `RateLimitDependency`: Dependency para rotas
-- `RateLimitMiddleware`: Middleware global
-- `rate_limit_exception_handler`: Handler de exceções
+- `RateLimitDependency`: Dependency for routes
+- `RateLimitMiddleware`: Global middleware
+- `rate_limit_exception_handler`: Exception handler
 
 ## Troubleshooting
 
-### Poetry - Ambiente Virtual Compartilhado
+### Poetry - Shared Virtual Environment
 
-**Sintoma:** Alterações no código não refletidas em runtime.
+**Symptom:** Code changes not reflected at runtime.
 
-**Causa:** `VIRTUAL_ENV` definida de outro ambiente.
+**Cause:** `VIRTUAL_ENV` defined from another environment.
 
-**Solução:**
+**Solution:**
 ```bash
 unset VIRTUAL_ENV
 rm -rf .venv
 poetry install
 ```
 
-### Testes de Integração Falhando
+### Integration Tests Failing
 
-**Sintoma:** Testes marcados com `@pytest.mark.integration` falham com erro de conexão.
+**Symptom:** Tests marked with `@pytest.mark.integration` fail with connection error.
 
-**Causa:** Infraestrutura (Redis/NATS/PostgreSQL) não está rodando.
+**Cause:** Infrastructure (Redis/PostgreSQL) is not running.
 
-**Solução:** Use `-m "not integration"` para pular esses testes, ou suba a infraestrutura necessária.
+**Solution:** Use `-m "not integration"` to skip these tests, or start the required infrastructure.
 
-## Política de Versioning
+## Versioning Policy
 
-Seguimos [Semantic Versioning](https://semver.org/):
+We follow [Semantic Versioning](https://semver.org/):
 
-- **MAJOR**: Mudanças incompatíveis na API
-- **MINOR**: Nova funcionalidade compatível
-- **PATCH**: Bug fixes compatíveis
+- **MAJOR**: Incompatible API changes
+- **MINOR**: New backward-compatible functionality
+- **PATCH**: Backward-compatible bug fixes
 
-## Licença
+## License
 
-MIT License - veja LICENSE para detalhes.
+MIT License - see LICENSE for details.

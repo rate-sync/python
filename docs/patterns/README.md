@@ -16,7 +16,7 @@ Common patterns and best practices for implementing rate limiting with rate-sync
 
 ### Infrastructure Patterns
 - [**Testing**](./testing.md) - Testing rate-limited code effectively
-- [**Production Deployment**](./production-deployment.md) - Deploying with Redis/NATS
+- [**Production Deployment**](./production-deployment.md) - Deploying with Redis/PostgreSQL
 - [**Monitoring**](./monitoring.md) - Observability and alerting
 
 ---
@@ -66,7 +66,6 @@ Use `CompositeRateLimiter` when you need:
 |---------|----------|------|------|
 | **Memory** | Development, Testing, Single Process | Simple, Fast, No dependencies | No coordination, Lost on restart |
 | **Redis** | Production, Distributed | Battle-tested, Fast, Persistent | Requires Redis, Network latency |
-| **NATS** | Distributed, Event-driven | Low latency, Built-in HA | Requires NATS cluster |
 | **PostgreSQL** | Existing Postgres, Lower QPS | No new infrastructure | Higher latency, DB load |
 
 ---

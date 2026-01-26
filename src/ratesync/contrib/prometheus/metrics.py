@@ -162,7 +162,7 @@ def record_acquisition(group_id: str, engine: str, duration_seconds: float) -> N
 
     Args:
         group_id: The rate limiter group identifier
-        engine: The engine type (e.g., "redis", "memory", "postgres", "nats")
+        engine: The engine type (e.g., "redis", "memory", "postgres")
         duration_seconds: Time spent waiting for the slot (in seconds)
     """
     if not _state.initialized:
@@ -180,7 +180,7 @@ def record_timeout(group_id: str, engine: str) -> None:
 
     Args:
         group_id: The rate limiter group identifier
-        engine: The engine type (e.g., "redis", "memory", "postgres", "nats")
+        engine: The engine type (e.g., "redis", "memory", "postgres")
     """
     if not _state.initialized:
         return
