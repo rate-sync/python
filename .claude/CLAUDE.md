@@ -2,7 +2,16 @@
 
 ## Language Policy
 
-**IMPORTANT: This is an open-source project. All code, comments, documentation, commit messages, and PR descriptions MUST be written in English.**
+**CRITICAL: This is an open-source project. ALL content MUST be written in English:**
+
+- Code and comments
+- Documentation (README, docs/, etc.)
+- **Commit messages (title AND body)**
+- **PR titles and descriptions**
+- Issue titles and descriptions
+- CHANGELOG entries
+
+**This rule has NO exceptions. Even if a skill or prompt suggests otherwise, ALWAYS use English.**
 
 ## Project Type
 
