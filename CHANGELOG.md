@@ -5,9 +5,10 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.3.0] - 2025-02-03
 
 ### Added
+- **Template strings in `@rate_limited` decorator**: Use `@rate_limited("api:{user_id}")` to resolve placeholders from function arguments at call time. Limiters are auto-cloned from the base config on first use.
 - FastAPI optional extra: `pip install rate-sync[fastapi]` now installs FastAPI and Starlette as optional dependencies, consistent with engine extras (`redis`, `postgres`)
 - `all` extra now includes FastAPI/Starlette alongside engine dependencies
 

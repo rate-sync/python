@@ -181,7 +181,17 @@ async def fetch_data():
     return await client.get(url)
 ```
 
-### Per-User Limits
+### Dynamic Per-User Limits (Template Strings)
+
+```python
+from ratesync import rate_limited
+
+@rate_limited("api:{user_id}")  # Resolved at call time
+async def fetch_user_data(user_id: str):
+    return await client.get(url)
+```
+
+### Per-User Limits (Manual)
 
 ```python
 from ratesync import clone_limiter, acquire

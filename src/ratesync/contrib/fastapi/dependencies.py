@@ -144,7 +144,9 @@ class RateLimitDependency:
                 is None.
         """
         if not FASTAPI_AVAILABLE:
-            raise RuntimeError("FastAPI/Starlette not installed. Install with: pip install rate-sync[fastapi]")
+            raise RuntimeError(
+                "FastAPI/Starlette not installed. Install with: pip install rate-sync[fastapi]"
+            )
 
         self.limiter_id = limiter_id
         self.identifier_extractor = identifier_extractor

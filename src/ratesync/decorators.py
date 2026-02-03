@@ -7,6 +7,7 @@ declaratively to async functions.
 import functools
 import inspect
 import logging
+import re
 from collections.abc import Callable
 from typing import Any, TypeVar, cast
 
@@ -15,11 +16,14 @@ from ratesync.exceptions import (
     LimiterNotFoundError,
     RateLimiterAcquisitionError,
 )
-from ratesync.registry import get_limiter
+from ratesync.registry import clone_limiter, get_limiter
 
 logger = logging.getLogger(__name__)
 
 F = TypeVar("F", bound=Callable[..., Any])
+
+# Regex to detect template placeholders like {user_id} or {tenant_id}
+_TEMPLATE_PATTERN = re.compile(r"\{(\w+)\}")
 
 
 def rate_limited(
@@ -30,15 +34,17 @@ def rate_limited(
 ) -> Callable[[F], F]:
     """Decorator to apply rate limiting to async functions.
 
-    Supports two usage modes:
+    Supports three usage modes:
 
     1. **Fixed limiter** (string): Uses registry to look up limiter by name
-    2. **Dynamic factory** (callable): Calls function to obtain limiter dynamically
+    2. **Template string** (string with {placeholders}): Dynamically resolves
+       limiter ID using function arguments. Auto-clones from base limiter.
+    3. **Dynamic factory** (callable): Calls function to obtain limiter dynamically
 
     Args:
-        limiter_or_factory: Name of limiter in registry (str) or callable that
-            returns the limiter. The callable receives the same arguments as the
-            decorated function and must return a RateLimiter instance.
+        limiter_or_factory: Name of limiter in registry (str), template string
+            with {placeholders} that reference function arguments, or callable
+            that returns the limiter.
         timeout: Optional timeout in seconds. If specified, uses try_acquire().
             If None, uses acquire() (waits indefinitely).
         mode: Behavior mode when unable to acquire slot:
@@ -57,6 +63,11 @@ def rate_limited(
         >>> # Usage with fixed limiter (registry)
         >>> @rate_limited("payments")
         >>> async def fetch_payment_data():
+        >>>     return await http_client.get(url)
+        >>>
+        >>> # Usage with template string (dynamic per-user limiting)
+        >>> @rate_limited("api:{user_id}")
+        >>> async def call_api(user_id: str, url: str):
         >>>     return await http_client.get(url)
         >>>
         >>> # Usage with dynamic factory (multi-tenant)
@@ -98,18 +109,23 @@ def rate_limited(
             # Resolve limiter
             limiter: RateLimiter
             if isinstance(limiter_or_factory, str):
-                # Mode 1: Fixed limiter_id in registry
-                try:
-                    limiter = get_limiter(limiter_or_factory)
-                except LimiterNotFoundError:
-                    logger.warning(
-                        "Rate limiter %r not configured, executing without rate limit",
-                        limiter_or_factory,
-                    )
-                    # Fallback: execute without rate limit
-                    return await func(*args, **kwargs)
+                # Check if it's a template string (contains {placeholder})
+                if _TEMPLATE_PATTERN.search(limiter_or_factory):
+                    # Mode 2: Template string - resolve placeholders from function args
+                    limiter = _resolve_template_limiter(limiter_or_factory, func, args, kwargs)
+                else:
+                    # Mode 1: Fixed limiter_id in registry
+                    try:
+                        limiter = get_limiter(limiter_or_factory)
+                    except LimiterNotFoundError:
+                        logger.warning(
+                            "Rate limiter %r not configured, executing without rate limit",
+                            limiter_or_factory,
+                        )
+                        # Fallback: execute without rate limit
+                        return await func(*args, **kwargs)
             else:
-                # Mode 2: Dynamic factory
+                # Mode 3: Dynamic factory
                 # Call factory with decorated function arguments
                 try:
                     limiter = _call_factory(limiter_or_factory, func, args, kwargs)
@@ -195,3 +211,73 @@ def _call_factory(
     filtered_kwargs = {k: v for k, v in all_kwargs.items() if k in factory_params}
 
     return factory(**filtered_kwargs)
+
+
+def _resolve_template_limiter(
+    template: str,
+    func: Callable[..., Any],
+    args: tuple[Any, ...],
+    kwargs: dict[str, Any],
+) -> RateLimiter:
+    """Resolve a template string to a limiter, cloning if necessary.
+
+    Template format: "base_limiter:{placeholder1}:{placeholder2}"
+    - The base limiter ID is extracted from the part before the first ":"
+    - Placeholders are resolved using the decorated function's arguments
+    - If the resolved limiter doesn't exist, it's cloned from the base limiter
+
+    Args:
+        template: Template string like "api:{user_id}" or "api:{tenant}:{user}"
+        func: The decorated function
+        args: Positional arguments passed to the function
+        kwargs: Keyword arguments passed to the function
+
+    Returns:
+        RateLimiter instance for the resolved limiter ID
+
+    Raises:
+        LimiterNotFoundError: If the base limiter doesn't exist
+        ValueError: If a placeholder references a non-existent argument
+    """
+    # Bind function arguments to get a complete mapping
+    func_sig = inspect.signature(func)
+    bound = func_sig.bind(*args, **kwargs)
+    bound.apply_defaults()
+    all_kwargs = dict(bound.arguments)
+
+    # Find all placeholders in the template
+    placeholders = _TEMPLATE_PATTERN.findall(template)
+
+    # Validate that all placeholders exist in function arguments
+    for placeholder in placeholders:
+        if placeholder not in all_kwargs:
+            raise ValueError(
+                f"Template placeholder '{{{placeholder}}}' not found in function "
+                f"arguments. Available: {list(all_kwargs.keys())}"
+            )
+
+    # Resolve the template by substituting placeholders
+    resolved_id = template.format(**all_kwargs)
+
+    # Extract base limiter ID (part before the first ":")
+    base_limiter_id = template.split(":")[0]
+
+    # Try to get existing limiter, or clone from base
+    try:
+        return get_limiter(resolved_id)
+    except LimiterNotFoundError:
+        # Clone from base limiter
+        try:
+            clone_limiter(base_limiter_id, resolved_id)
+            logger.debug(
+                "Cloned limiter '%s' from base '%s'",
+                resolved_id,
+                base_limiter_id,
+            )
+            return get_limiter(resolved_id)
+        except LimiterNotFoundError:
+            # Base limiter doesn't exist
+            raise LimiterNotFoundError(
+                f"Base limiter '{base_limiter_id}' not found. "
+                f"Template '{template}' requires '{base_limiter_id}' to be configured."
+            ) from None

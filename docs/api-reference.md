@@ -268,19 +268,28 @@ await acquire("api", timeout=5.0)
 
 ### rate_limited
 
-Decorator for rate limiting async functions.
+Decorator for rate limiting async functions. Supports three modes:
+
+1. **Fixed limiter ID**: `@rate_limited("api")`
+2. **Template string**: `@rate_limited("api:{user_id}")` — resolves placeholders from function arguments
+3. **Factory callable**: `@rate_limited(lambda tenant: get_limiter(tenant))`
 
 ```python
 def rate_limited(
-    limiter_id: str | Callable[..., str],
+    limiter_or_factory: str | Callable[..., RateLimiter],
+    *,
     timeout: float | None = None,
+    mode: str = "wait",
 ) -> Callable
 ```
 
-| Parameter | Type | Description |
-|-----------|------|-------------|
-| `limiter_id` | `str` or `Callable` | Static ID or callable returning ID |
-| `timeout` | `float \| None` | Timeout override |
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `limiter_or_factory` | `str` or `Callable` | Required | Limiter ID, template, or factory |
+| `timeout` | `float \| None` | `None` | Timeout override |
+| `mode` | `str` | `"wait"` | `"wait"` or `"try"` (returns `None` if blocked) |
+
+#### Fixed Limiter
 
 ```python
 from ratesync import rate_limited
@@ -292,11 +301,43 @@ async def fetch_data() -> dict:
 @rate_limited("api", timeout=5.0)
 async def fetch_fast() -> dict:
     return await client.get(url)
+```
 
-# Dynamic limiter ID
-@rate_limited(lambda tenant_id: f"tenant:{tenant_id}")
+#### Template String (Dynamic Per-User/Tenant)
+
+Template placeholders like `{user_id}` are resolved **at call time** from function arguments. The limiter is auto-cloned from the base config on first use.
+
+```python
+@rate_limited("api:{user_id}")
+async def call_api(user_id: str, url: str) -> dict:
+    return await client.get(url)
+
+# Multiple placeholders
+@rate_limited("api:{tenant_id}:{user_id}")
+async def multi_tenant_api(tenant_id: str, user_id: str, data: dict) -> dict:
+    return await client.post(url, json=data)
+```
+
+#### Factory Callable
+
+For advanced cases, pass a callable that returns a `RateLimiter` instance.
+
+```python
+from ratesync import rate_limited, get_limiter
+
+@rate_limited(lambda tenant_id: get_limiter(f"tenant:{tenant_id}"))
 async def process(tenant_id: str, data: dict) -> dict:
     return await handle(data)
+```
+
+#### Try Mode
+
+Returns `None` instead of raising an exception when rate limited.
+
+```python
+@rate_limited("api", timeout=1.0, mode="try")
+async def best_effort_fetch() -> dict | None:
+    return await client.get(url)  # Returns None if blocked
 ```
 
 ---
