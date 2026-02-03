@@ -111,6 +111,8 @@ configure_limiter(
 
 Clone an existing limiter with optional overrides.
 
+> **Tip:** For per-user/tenant limiting, prefer using [template strings](#template-string-dynamic-per-usertenant) in the `@rate_limited` decorator: `@rate_limited("api:{user_id}")`. Use `clone_limiter` only when you need manual control.
+
 ```python
 def clone_limiter(
     source_id: str,
@@ -138,6 +140,8 @@ clone_limiter("api", "api:premium", rate_per_second=500.0)
 ### get_or_clone_limiter
 
 Get or create a cloned limiter for per-identifier rate limiting. Returns a limiter with ID `{base_limiter_id}:{unique_id}`. Creates a clone on first call, reuses on subsequent calls.
+
+> **Tip:** For most cases, prefer using [template strings](#template-string-dynamic-per-usertenant) in the `@rate_limited` decorator: `@rate_limited("api:{user_id}")`. Use `get_or_clone_limiter` only when you need direct access to the limiter instance.
 
 ```python
 async def get_or_clone_limiter(base_limiter_id: str, unique_id: str) -> RateLimiter

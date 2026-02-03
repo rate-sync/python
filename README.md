@@ -181,23 +181,30 @@ async def fetch_data():
     return await client.get(url)
 ```
 
-### Dynamic Per-User Limits (Template Strings)
+### Per-User/Tenant Limits (Recommended)
+
+Use template strings — placeholders are resolved at call time:
 
 ```python
-from ratesync import rate_limited
-
-@rate_limited("api:{user_id}")  # Resolved at call time
+@rate_limited("api:{user_id}")
 async def fetch_user_data(user_id: str):
     return await client.get(url)
+
+@rate_limited("api:{tenant_id}:{user_id}")
+async def multi_tenant_api(tenant_id: str, user_id: str):
+    return await client.post(url)
 ```
 
 ### Per-User Limits (Manual)
 
-```python
-from ratesync import clone_limiter, acquire
+For advanced cases where you need direct limiter control:
 
-clone_limiter("api", f"api:{user_id}")
-await acquire(f"api:{user_id}")
+```python
+from ratesync import get_or_clone_limiter
+
+limiter = await get_or_clone_limiter("api", user_id)
+async with limiter.acquire_context():
+    response = await client.get(url)
 ```
 
 ## Backends
