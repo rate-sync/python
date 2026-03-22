@@ -41,7 +41,7 @@ try:
             try:
                 client = aioredis.from_url(url, decode_responses=False)
                 await client.ping()
-                await client.close()
+                await client.aclose()
                 return True
             except Exception:
                 return False
