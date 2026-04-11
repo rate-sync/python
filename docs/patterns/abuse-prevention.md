@@ -10,13 +10,13 @@ Attackers probe registration/login to discover valid accounts.
 
 ```toml
 [limiters.register_ip]
-store = "redis"
+store = "security-cache"
 algorithm = "sliding_window"
 limit = 3
 window_seconds = 3600
 
 [limiters.register_global]
-store = "redis"
+store = "security-cache"
 algorithm = "sliding_window"
 limit = 100
 window_seconds = 60
@@ -51,19 +51,19 @@ Multi-layer protection with progressive delay.
 
 ```toml
 [limiters.login_ip]
-store = "redis"
+store = "security-cache"
 algorithm = "sliding_window"
 limit = 10
 window_seconds = 300
 
 [limiters.login_credential]
-store = "redis"
+store = "security-cache"
 algorithm = "sliding_window"
 limit = 5
 window_seconds = 900
 
 [limiters.login_failed]
-store = "redis"
+store = "security-cache"
 algorithm = "sliding_window"
 limit = 3
 window_seconds = 1800
@@ -111,17 +111,17 @@ Different limits based on operation cost.
 
 ```toml
 [limiters.api_read]
-store = "redis"
+store = "security-cache"
 rate_per_second = 100.0
 
 [limiters.api_write]
-store = "redis"
+store = "security-cache"
 algorithm = "sliding_window"
 limit = 100
 window_seconds = 60
 
 [limiters.api_export]
-store = "redis"
+store = "security-cache"
 algorithm = "sliding_window"
 limit = 5
 window_seconds = 86400
@@ -185,13 +185,13 @@ Global velocity limiting catches botnet attacks.
 
 ```toml
 [limiters.global_login]
-store = "redis"
+store = "security-cache"
 algorithm = "sliding_window"
 limit = 1000
 window_seconds = 60
 
 [limiters.global_failed]
-store = "redis"
+store = "security-cache"
 algorithm = "sliding_window"
 limit = 100
 window_seconds = 60

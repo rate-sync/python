@@ -6,7 +6,7 @@ Deploy rate-sync with Redis for distributed rate limiting.
 
 ```toml
 # rate-sync.toml
-[stores.redis]
+[stores.prod-cluster]
 engine = "redis"
 url = "${REDIS_URL}"
 pool_max_size = 50
@@ -14,14 +14,14 @@ socket_timeout = 5.0
 
 # Public endpoints: fail-open
 [limiters.public]
-store = "redis"
+store = "prod-cluster"
 algorithm = "token_bucket"
 rate_per_second = 100.0
 fail_closed = false
 
 # Auth endpoints: fail-closed (security)
 [limiters.auth]
-store = "redis"
+store = "prod-cluster"
 algorithm = "sliding_window"
 limit = 10
 window_seconds = 300

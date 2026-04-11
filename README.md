@@ -23,7 +23,7 @@ Attackers try thousands of password combinations. A sliding window limiter on yo
 
 ```toml
 [limiters.auth_credential]
-store = "redis"
+store = "prod-cache"
 algorithm = "sliding_window"
 limit = 5                # 5 attempts
 window_seconds = 300     # per 5 minutes
@@ -71,7 +71,7 @@ Five concurrent 1GB uploads can exhaust server memory. PDF generation can peg ev
 
 ```toml
 [limiters.upload]
-store = "redis"
+store = "prod-cache"
 max_concurrent = 10          # max 10 uploads at once
 timeout = 300.0
 ```
@@ -84,7 +84,7 @@ You have 20 Celery workers calling the Stripe API, which allows 100 req/s. Witho
 
 ```toml
 [limiters.stripe_api]
-store = "redis"
+store = "prod-cache"
 rate_per_second = 90.0   # stay under Stripe's 100/s limit
 max_concurrent = 10       # max 10 in-flight calls
 ```
@@ -96,12 +96,12 @@ max_concurrent = 10       # max 10 in-flight calls
 In-memory counters reset when a process restarts and can't coordinate across instances. rate-sync uses Redis or PostgreSQL as a shared backend, so limits are enforced consistently across your entire fleet.
 
 ```toml
-[stores.redis]
+[stores.prod-cache]
 engine = "redis"
 url = "${REDIS_URL}"
 
 [limiters.api]
-store = "redis"          # all instances share this
+store = "prod-cache"     # all instances share this
 rate_per_second = 100.0
 ```
 
@@ -219,7 +219,7 @@ engine = "memory"
 ### Redis (production)
 
 ```toml
-[stores.redis]
+[stores.prod-cache]
 engine = "redis"
 url = "redis://localhost:6379/0"
 ```
@@ -240,7 +240,7 @@ Controls request throughput with optional concurrency limits:
 
 ```toml
 [limiters.external_api]
-store = "redis"
+store = "prod-cache"
 rate_per_second = 100.0  # Max 100 req/sec
 max_concurrent = 10      # Max 10 in-flight requests
 timeout = 30.0           # Wait up to 30s for a slot
@@ -252,7 +252,7 @@ Counts requests in a time window. Ideal for login protection:
 
 ```toml
 [limiters.login]
-store = "redis"
+store = "prod-cache"
 algorithm = "sliding_window"
 limit = 5              # Max 5 attempts
 window_seconds = 300   # Per 5 minutes

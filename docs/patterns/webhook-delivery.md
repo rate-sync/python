@@ -18,19 +18,19 @@ This is fundamentally different from inbound rate limiting — you're protecting
 
 ```toml
 # rate-sync.toml
-[stores.redis]
+[stores.outbound-cache]
 engine = "redis"
 url = "${REDIS_URL}"
 
 # Per-endpoint delivery rate
 [limiters.webhook_endpoint]
-store = "redis"
+store = "outbound-cache"
 rate_per_second = 10.0
 max_concurrent = 5
 
 # Global outbound limit (protect your own IP reputation)
 [limiters.webhook_global]
-store = "redis"
+store = "outbound-cache"
 rate_per_second = 500.0
 max_concurrent = 100
 ```

@@ -51,16 +51,16 @@ async def health():
 **Configuration (`rate-sync.toml`):**
 
 ```toml
-[stores.redis]
+[stores.api-backend]
 engine = "redis"
 url = "${REDIS_URL:-redis://localhost:6379/0}"
 
 [limiters.global]
-store = "redis"
+store = "api-backend"
 rate_per_second = 1000.0
 
 [limiters.api]
-store = "redis"
+store = "api-backend"
 algorithm = "sliding_window"
 limit = 100
 window_seconds = 60
@@ -159,13 +159,13 @@ async def get_data(_: None = Depends(RateLimitDependency("api"))):
 
 ```toml
 [limiters.login]
-store = "redis"
+store = "api-backend"
 algorithm = "sliding_window"
 limit = 5
 window_seconds = 300
 
 [limiters.api]
-store = "redis"
+store = "api-backend"
 rate_per_second = 100.0
 ```
 

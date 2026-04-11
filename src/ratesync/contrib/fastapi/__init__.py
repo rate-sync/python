@@ -80,13 +80,13 @@ Configuration:
     Rate limiters should be configured in rate-sync.toml:
 
     [limiters.api]
-    store = "redis"
+    store = "api-backend"
     algorithm = "sliding_window"
     limit = 100
     window_seconds = 60
 
     [limiters.user_api]
-    store = "redis"
+    store = "api-backend"
     algorithm = "sliding_window"
     limit = 300
     window_seconds = 60

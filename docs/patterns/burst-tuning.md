@@ -12,7 +12,7 @@ rate-sync provides two algorithms. Choosing the wrong one leads to either false 
 
 ```toml
 [limiters.api]
-store = "redis"
+store = "rate-backend"
 algorithm = "token_bucket"    # default
 rate_per_second = 100.0       # 100 req/s sustained
 ```
@@ -27,7 +27,7 @@ rate_per_second = 100.0       # 100 req/s sustained
 
 ```toml
 [limiters.login]
-store = "redis"
+store = "rate-backend"
 algorithm = "sliding_window"
 limit = 5                     # exactly 5 attempts
 window_seconds = 300          # per 5-minute window
@@ -66,7 +66,7 @@ rate_per_second = (1000 × 0.8) / 100 = 8.0
 
 ```toml
 [limiters.api]
-store = "redis"
+store = "rate-backend"
 rate_per_second = 8.0
 ```
 
@@ -75,22 +75,22 @@ rate_per_second = 8.0
 ```toml
 # Public API — generous
 [limiters.api_public]
-store = "redis"
+store = "rate-backend"
 rate_per_second = 100.0
 
 # Authenticated API — moderate
 [limiters.api_auth]
-store = "redis"
+store = "rate-backend"
 rate_per_second = 50.0
 
 # Write operations — conservative
 [limiters.api_write]
-store = "redis"
+store = "rate-backend"
 rate_per_second = 10.0
 
 # External service proxy — match their limit
 [limiters.stripe]
-store = "redis"
+store = "rate-backend"
 rate_per_second = 90.0    # Stripe allows 100/s — stay 10% under
 ```
 
@@ -114,17 +114,17 @@ Use `max_concurrent` when the operation holds a resource for its duration:
 ```toml
 # Database connections: limited pool
 [limiters.db_query]
-store = "redis"
+store = "rate-backend"
 max_concurrent = 20      # match your connection pool size
 
 # File uploads: memory-intensive
 [limiters.upload]
-store = "redis"
+store = "rate-backend"
 max_concurrent = 5
 
 # PDF generation: CPU-intensive
 [limiters.pdf]
-store = "redis"
+store = "rate-backend"
 max_concurrent = 3
 ```
 
@@ -137,7 +137,7 @@ For operations that are both frequent and resource-heavy:
 ```toml
 # External API: 50 req/s but max 10 in-flight
 [limiters.external_api]
-store = "redis"
+store = "rate-backend"
 rate_per_second = 50.0
 max_concurrent = 10
 timeout = 30.0
@@ -160,19 +160,19 @@ The `timeout` parameter controls how long a request waits for a rate limit slot 
 ```toml
 # User-facing API: fail fast
 [limiters.api]
-store = "redis"
+store = "rate-backend"
 rate_per_second = 100.0
 timeout = 2.0               # 2s max wait
 
 # Background job: can wait
 [limiters.batch]
-store = "redis"
+store = "rate-backend"
 rate_per_second = 10.0
 timeout = 60.0              # 1 min is fine
 
 # Critical path: moderate wait
 [limiters.payment]
-store = "redis"
+store = "rate-backend"
 rate_per_second = 20.0
 timeout = 10.0              # 10s before failing
 ```
@@ -205,28 +205,28 @@ For sliding window limiters, these two parameters define the quota.
 ```toml
 # Login protection: 5 per 5 minutes
 [limiters.login]
-store = "redis"
+store = "rate-backend"
 algorithm = "sliding_window"
 limit = 5
 window_seconds = 300
 
 # Hourly API quota: 1000 per hour
 [limiters.api_hourly]
-store = "redis"
+store = "rate-backend"
 algorithm = "sliding_window"
 limit = 1000
 window_seconds = 3600
 
 # Daily export cap: 10 per day
 [limiters.export]
-store = "redis"
+store = "rate-backend"
 algorithm = "sliding_window"
 limit = 10
 window_seconds = 86400
 
 # Signup rate: 3 per hour per IP
 [limiters.signup]
-store = "redis"
+store = "rate-backend"
 algorithm = "sliding_window"
 limit = 3
 window_seconds = 3600

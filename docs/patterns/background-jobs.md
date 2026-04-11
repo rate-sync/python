@@ -9,18 +9,18 @@ Respect external service quotas.
 ```toml
 # rate-sync.toml
 [limiters.github_api]
-store = "redis"
+store = "worker-backend"
 algorithm = "sliding_window"
 limit = 5000
 window_seconds = 3600
 
 [limiters.stripe_api]
-store = "redis"
+store = "worker-backend"
 algorithm = "token_bucket"
 rate_per_second = 100.0
 
 [limiters.openai_api]
-store = "redis"
+store = "worker-backend"
 algorithm = "sliding_window"
 limit = 60
 window_seconds = 60

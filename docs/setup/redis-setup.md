@@ -65,21 +65,21 @@ services:
 
 **Basic:**
 ```toml
-[stores.redis]
+[stores.dev-local]
 engine = "redis"
 url = "redis://localhost:6379/0"
 ```
 
 **With password:**
 ```toml
-[stores.redis]
+[stores.main-store]
 engine = "redis"
 url = "redis://:${REDIS_PASSWORD}@localhost:6379/0"
 ```
 
 **Production (TLS + auth):**
 ```toml
-[stores.redis]
+[stores.prod-cache]
 engine = "redis"
 url = "rediss://:${REDIS_PASSWORD}@redis.internal:6380/0"
 pool_max_size = 20

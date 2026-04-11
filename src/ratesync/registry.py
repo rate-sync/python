@@ -167,12 +167,12 @@ class RateLimiterRegistry:
 
         Example:
             >>> # Token bucket: 100 req/min
-            >>> registry.configure_limiter("api", store_id="redis", rate_per_second=1.67)
+            >>> registry.configure_limiter("api", store_id="prod-cache", rate_per_second=1.67)
             >>>
             >>> # Sliding window: 5 attempts per 5 minutes
             >>> registry.configure_limiter(
             ...     "login",
-            ...     store_id="redis",
+            ...     store_id="prod-cache",
             ...     algorithm="sliding_window",
             ...     limit=5,
             ...     window_seconds=300
@@ -669,7 +669,7 @@ def configure_limiter(
         >>>
         >>> # Sliding window: Auth protection
         >>> configure_limiter(
-        ...     "login", store_id="redis", algorithm="sliding_window",
+        ...     "login", store_id="main-store", algorithm="sliding_window",
         ...     limit=5, window_seconds=300
         ... )
     """

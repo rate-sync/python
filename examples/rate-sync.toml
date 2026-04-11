@@ -4,7 +4,7 @@
 # Store (coordination backend)
 # ==============================================================================
 
-[stores.redis]
+[stores.shared-backend]
 engine = "redis"
 url = "redis://localhost:6379/0"
 
@@ -14,7 +14,7 @@ url = "redis://localhost:6379/0"
 
 # Free Tier - For startups/hobby
 [limiters.free-tier]
-store = "redis"
+store = "shared-backend"
 algorithm = "token_bucket"
 rate_per_second = 0.16      # ~10 requests/minute
 max_concurrent = 2          # Max 2 simultaneous requests
@@ -22,7 +22,7 @@ timeout = 10.0              # Wait up to 10s for slot
 
 # Pro Tier - For small/medium businesses
 [limiters.pro-tier]
-store = "redis"
+store = "shared-backend"
 algorithm = "token_bucket"
 rate_per_second = 1.66      # ~100 requests/minute
 max_concurrent = 20         # Max 20 simultaneous requests
@@ -30,7 +30,7 @@ timeout = 30.0
 
 # Enterprise Tier - For large companies
 [limiters.enterprise-tier]
-store = "redis"
+store = "shared-backend"
 algorithm = "token_bucket"
 rate_per_second = 16.66     # ~1000 requests/minute
 max_concurrent = 200        # Max 200 simultaneous requests

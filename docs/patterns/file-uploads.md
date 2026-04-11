@@ -18,38 +18,38 @@ These operations need **concurrency-based** limiting (how many at once), not jus
 
 ```toml
 # rate-sync.toml
-[stores.redis]
+[stores.upload-backend]
 engine = "redis"
 url = "${REDIS_URL}"
 
 # File uploads: limit concurrency, not rate
 [limiters.upload]
-store = "redis"
+store = "upload-backend"
 max_concurrent = 10
 timeout = 300.0
 
 # Per-user upload slots
 [limiters.upload_user]
-store = "redis"
+store = "upload-backend"
 max_concurrent = 2
 timeout = 300.0
 
 # PDF generation: limited throughput + concurrency
 [limiters.pdf_generate]
-store = "redis"
+store = "upload-backend"
 rate_per_second = 5.0
 max_concurrent = 3
 timeout = 120.0
 
 # Bulk imports: strict concurrency
 [limiters.bulk_import]
-store = "redis"
+store = "upload-backend"
 max_concurrent = 2
 timeout = 600.0
 
 # Daily export quota
 [limiters.export_daily]
-store = "redis"
+store = "upload-backend"
 algorithm = "sliding_window"
 limit = 10
 window_seconds = 86400
@@ -87,11 +87,11 @@ Different limits based on file size — small files get generous limits, large f
 
 ```toml
 [limiters.upload_small]
-store = "redis"
+store = "upload-backend"
 max_concurrent = 20
 
 [limiters.upload_large]
-store = "redis"
+store = "upload-backend"
 max_concurrent = 3
 timeout = 600.0
 ```
@@ -233,17 +233,17 @@ Different plans get different upload capabilities.
 
 ```toml
 [limiters.upload_free]
-store = "redis"
+store = "upload-backend"
 max_concurrent = 1
 timeout = 60.0
 
 [limiters.upload_pro]
-store = "redis"
+store = "upload-backend"
 max_concurrent = 5
 timeout = 300.0
 
 [limiters.upload_enterprise]
-store = "redis"
+store = "upload-backend"
 max_concurrent = 20
 timeout = 600.0
 ```

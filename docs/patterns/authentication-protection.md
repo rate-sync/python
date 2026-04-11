@@ -8,20 +8,20 @@ Protect auth endpoints against brute force, credential stuffing, and account enu
 
 ```toml
 # rate-sync.toml
-[stores.redis]
+[stores.security-backend]
 engine = "redis"
 url = "${REDIS_URL}"
 
 # Layer 1: IP-based (stops scanning)
 [limiters.auth_ip]
-store = "redis"
+store = "security-backend"
 algorithm = "sliding_window"
 limit = 30
 window_seconds = 60
 
 # Layer 2: Credential-based (stops brute force)
 [limiters.auth_credential]
-store = "redis"
+store = "security-backend"
 algorithm = "sliding_window"
 limit = 5
 window_seconds = 300
@@ -77,13 +77,13 @@ async def login(request: Request, email: str, password: str):
 
 ```toml
 [limiters.reset_ip]
-store = "redis"
+store = "security-backend"
 algorithm = "sliding_window"
 limit = 5
 window_seconds = 600
 
 [limiters.reset_email]
-store = "redis"
+store = "security-backend"
 algorithm = "sliding_window"
 limit = 3
 window_seconds = 3600
@@ -93,7 +93,7 @@ window_seconds = 3600
 
 ```toml
 [limiters.register_ip]
-store = "redis"
+store = "security-backend"
 algorithm = "sliding_window"
 limit = 3
 window_seconds = 3600

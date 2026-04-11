@@ -13,23 +13,23 @@ Rate limiting tells you _when_ to stop. Graceful degradation tells you _what to 
 When the system is under pressure, serve high-priority requests first and shed the rest.
 
 ```toml
-[stores.redis]
+[stores.priority-backend]
 engine = "redis"
 url = "${REDIS_URL}"
 
 # Generous limit for critical paths
 [limiters.api_critical]
-store = "redis"
+store = "priority-backend"
 rate_per_second = 500.0
 
 # Tighter limit for normal traffic
 [limiters.api_normal]
-store = "redis"
+store = "priority-backend"
 rate_per_second = 200.0
 
 # Strict limit for best-effort traffic
 [limiters.api_low]
-store = "redis"
+store = "priority-backend"
 rate_per_second = 50.0
 ```
 

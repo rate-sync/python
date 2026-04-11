@@ -14,26 +14,26 @@ This is different from [API Tiering](./api-tiering.md) (which defines what each 
 
 ```toml
 # rate-sync.toml
-[stores.redis]
+[stores.tenant-store]
 engine = "redis"
 url = "${REDIS_URL}"
 
 # Base limiter template — cloned per tenant
 [limiters.tenant_api]
-store = "redis"
+store = "tenant-store"
 rate_per_second = 50.0
 max_concurrent = 20
 
 # Stricter limit for expensive operations
 [limiters.tenant_export]
-store = "redis"
+store = "tenant-store"
 algorithm = "sliding_window"
 limit = 50
 window_seconds = 3600
 
 # Global platform safety net
 [limiters.platform_global]
-store = "redis"
+store = "tenant-store"
 rate_per_second = 5000.0
 ```
 
@@ -90,15 +90,15 @@ Different operations have different costs. A list query is cheap; a PDF export i
 
 ```toml
 [limiters.tenant_read]
-store = "redis"
+store = "tenant-store"
 rate_per_second = 100.0
 
 [limiters.tenant_write]
-store = "redis"
+store = "tenant-store"
 rate_per_second = 20.0
 
 [limiters.tenant_export]
-store = "redis"
+store = "tenant-store"
 algorithm = "sliding_window"
 limit = 50
 window_seconds = 3600
@@ -150,11 +150,11 @@ Even with per-tenant limits, a burst of new tenants or a coordinated spike can o
 
 ```toml
 [limiters.platform_global]
-store = "redis"
+store = "tenant-store"
 rate_per_second = 5000.0
 
 [limiters.platform_writes]
-store = "redis"
+store = "tenant-store"
 rate_per_second = 1000.0
 ```
 

@@ -127,18 +127,18 @@ class LimiterConfig:
 
     Examples:
         >>> # Token bucket: 100 req/min
-        >>> LimiterConfig(store="redis", rate_per_second=1.67)
+        >>> LimiterConfig(store="prod-cache", rate_per_second=1.67)
         >>>
         >>> # Sliding window: 5 requests per 5 minutes (auth protection)
         >>> LimiterConfig(
-        ...     store="redis",
+        ...     store="prod-cache",
         ...     algorithm="sliding_window",
         ...     limit=5,
         ...     window_seconds=300
         ... )
         >>>
         >>> # Token bucket with concurrency limit
-        >>> LimiterConfig(store="redis", rate_per_second=100.0, max_concurrent=50)
+        >>> LimiterConfig(store="prod-cache", rate_per_second=100.0, max_concurrent=50)
 
     Raises:
         ValueError: If configuration is invalid for the selected algorithm

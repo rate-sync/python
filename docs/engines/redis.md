@@ -22,12 +22,12 @@ pip install rate-sync[redis]
 
 ```toml
 # rate-sync.toml
-[stores.redis]
+[stores.prod-cache]
 engine = "redis"
 url = "redis://localhost:6379/0"
 
 [limiters.api]
-store = "redis"
+store = "prod-cache"
 rate_per_second = 100.0
 ```
 
@@ -61,7 +61,7 @@ Controls throughput with configurable rate:
 
 ```toml
 [limiters.api]
-store = "redis"
+store = "prod-cache"
 rate_per_second = 100.0
 max_concurrent = 50
 ```
@@ -72,7 +72,7 @@ Counts requests in a time window. Ideal for login limiting or abuse prevention:
 
 ```toml
 [limiters.login]
-store = "redis"
+store = "prod-cache"
 algorithm = "sliding_window"
 limit = 5
 window_seconds = 300
@@ -81,7 +81,7 @@ window_seconds = 300
 ### Production Configuration
 
 ```toml
-[stores.redis_prod]
+[stores.prod-cluster]
 engine = "redis"
 url = "rediss://:${REDIS_PASSWORD}@redis.internal:6380/0"
 pool_max_size = 20
@@ -94,7 +94,7 @@ socket_timeout = 10.0
 from ratesync import configure_store, configure_limiter
 
 configure_store(
-    "redis",
+    "prod-cache",
     strategy="redis",
     url="redis://localhost:6379/0",
     key_prefix="myapp",
@@ -103,7 +103,7 @@ configure_store(
 
 configure_limiter(
     "api",
-    store_id="redis",
+    store_id="prod-cache",
     rate_per_second=100.0,
     max_concurrent=50,
 )

@@ -44,12 +44,12 @@ pip install rate-sync[all]          # All backends + integrations
 Create `rate-sync.toml`:
 
 ```toml
-[stores.main]
+[stores.main-store]
 engine = "redis"
 url = "${REDIS_URL:-redis://localhost:6379/0}"
 
 [limiters.api]
-store = "main"
+store = "main-store"
 rate_per_second = 100.0
 max_concurrent = 50
 timeout = 30.0
@@ -92,7 +92,7 @@ Application Instances          Coordination Store
 
 ```toml
 [limiters.external_api]
-store = "redis"
+store = "main-store"
 rate_per_second = 10.0  # Max 10 req/sec
 ```
 
@@ -100,7 +100,7 @@ rate_per_second = 10.0  # Max 10 req/sec
 
 ```toml
 [limiters.db_pool]
-store = "redis"
+store = "main-store"
 max_concurrent = 20  # Max 20 simultaneous
 ```
 
@@ -108,7 +108,7 @@ max_concurrent = 20  # Max 20 simultaneous
 
 ```toml
 [limiters.production]
-store = "redis"
+store = "main-store"
 rate_per_second = 100.0  # Throughput
 max_concurrent = 50       # Parallelism
 timeout = 30.0
@@ -118,7 +118,7 @@ timeout = 30.0
 
 ```toml
 [limiters.login]
-store = "redis"
+store = "main-store"
 algorithm = "sliding_window"
 limit = 5
 window_seconds = 300  # 5 attempts per 5 min
