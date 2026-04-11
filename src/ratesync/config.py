@@ -423,7 +423,7 @@ def load_config(config_path: str | Path) -> None:
     - [fastapi]: FastAPI integration settings (optional)
 
     Example TOML:
-        [stores.prod_redis]
+        [stores.primary-store]
         engine = "redis"
         url = "${REDIS_URL}"
 
@@ -431,7 +431,7 @@ def load_config(config_path: str | Path) -> None:
         engine = "memory"
 
         [limiters.payments]
-        store = "prod_redis"
+        store = "primary-store"
         rate_per_second = 1.0
         timeout = 30.0
 

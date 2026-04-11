@@ -232,25 +232,25 @@ rate_per_second = 100.0
 ### Production Setup
 
 ```toml
-[stores.prod]
+[stores.primary-store]
 engine = "redis"
 url = "${REDIS_URL}"
 pool_max_size = 20
 
 [limiters.api]
-store = "prod"
+store = "primary-store"
 rate_per_second = 1000.0
 max_concurrent = 200
 timeout = 30.0
 
 [limiters.partner_api]
-store = "prod"
+store = "primary-store"
 rate_per_second = 10.0
 timeout = 60.0
 fail_closed = true
 
 [limiters.login]
-store = "prod"
+store = "primary-store"
 algorithm = "sliding_window"
 limit = 5
 window_seconds = 300
