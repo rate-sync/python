@@ -8,24 +8,24 @@ Different rate limits for different user tiers (free, pro, enterprise).
 
 ```toml
 # rate-sync.toml
-[stores.dev-local]
+[stores.shared-backend]
 engine = "redis"
 url = "${REDIS_URL}"
 
 [limiters.api_free]
-store = "dev-local"
+store = "shared-backend"
 algorithm = "sliding_window"
 limit = 100
 window_seconds = 3600
 
 [limiters.api_pro]
-store = "dev-local"
+store = "shared-backend"
 algorithm = "sliding_window"
 limit = 1000
 window_seconds = 3600
 
 [limiters.api_enterprise]
-store = "dev-local"
+store = "shared-backend"
 algorithm = "sliding_window"
 limit = 10000
 window_seconds = 3600
@@ -71,21 +71,21 @@ async def get_data(_: None = Depends(rate_limit_by_tier)):
 ```toml
 # Generous for reads
 [limiters.read_free]
-store = "dev-local"
+store = "shared-backend"
 algorithm = "sliding_window"
 limit = 1000
 window_seconds = 3600
 
 # Strict for writes
 [limiters.write_free]
-store = "dev-local"
+store = "shared-backend"
 algorithm = "sliding_window"
 limit = 100
 window_seconds = 3600
 
 # Very strict for exports
 [limiters.export_free]
-store = "dev-local"
+store = "shared-backend"
 algorithm = "sliding_window"
 limit = 10
 window_seconds = 86400

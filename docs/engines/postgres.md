@@ -97,7 +97,7 @@ auto_create = false
 ### Production Configuration
 
 ```toml
-[stores.prod_db]
+[stores.prod-db]
 engine = "postgres"
 url = "${DATABASE_URL}"
 auto_create = false
@@ -105,7 +105,7 @@ pool_min_size = 5
 pool_max_size = 20
 
 [limiters.api]
-store = "prod_db"
+store = "prod-db"
 rate_per_second = 100.0
 max_concurrent = 50
 timeout = 30.0

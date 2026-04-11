@@ -42,12 +42,12 @@ Common patterns for implementing rate limiting with rate-sync.
 
 ```toml
 # rate-sync.toml
-[stores.session-store]
+[stores.main-store]
 engine = "redis"
 url = "${REDIS_URL}"
 
 [limiters.api]
-store = "session-store"
+store = "main-store"
 algorithm = "token_bucket"
 rate_per_second = 100.0
 ```
