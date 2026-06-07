@@ -20,7 +20,11 @@ async def test_auto_loading():
     print(f"  Stores loaded: {list(stores.keys())}")
     print(f"  Limiters loaded: {list(limiters.keys())}")
 
-    assert "local_memory" in stores, "Store local_memory not loaded"
+    # `rate-sync.toml` currently defines `[stores.local]`.
+    # Keep backward-compatibility with legacy examples that used `local_memory`.
+    assert (
+        "local" in stores or "local_memory" in stores
+    ), "Expected default store ('local' or legacy 'local_memory') not loaded"
     assert "api_payments" in limiters, "Limiter api_payments not loaded"
 
     print("  ✓ Auto-loading works!\n")
