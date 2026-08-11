@@ -5,6 +5,26 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.2] - 2026-08-11
+
+### Fixed
+- `tests/compliance/test_state.py::TestStateIntrospection` parametrized 6 tests over every
+  engine that supports `get_state()`, including `redis` and `postgres`, without the
+  `redis`/`postgres`/`integration` markers the rest of the compliance suite uses to keep
+  infrastructure-requiring cases out of the `unit` CI job. This was masked as long as a
+  backend connection failure during `initialize()` always raised, which the engine factory
+  fixtures caught and turned into `pytest.skip(...)`. The 0.4.1 `fail_closed` fix corrected
+  `initialize()` to degrade to a permissive fail-open state instead of raising (its intended,
+  documented behavior for the default `fail_closed=False`), which stopped tripping that catch
+  and let the `unit` job silently run these cases against no real backend. 4 of the 6 tests'
+  assertions were strict enough to fail outright against the resulting fake permissive state;
+  the other 2 happened to still pass by coincidence. Engine parametrization for this class now
+  goes through a new `get_engine_params()` helper that attaches each engine's markers (already
+  declared, but previously unused, on `ENGINE_CAPABILITIES` in `tests/compliance/utils.py`), so
+  `redis`/`postgres` cases are properly deselected from `unit` and only run under the
+  `integration-redis`/`integration-postgres` CI jobs, against real backends. No production code
+  changed — the 0.4.1 `fail_closed` fix was correct; only this test's categorization was wrong.
+
 ## [0.4.1] - 2026-08-11
 
 ### Fixed
