@@ -18,12 +18,14 @@ import time
 try:
     from redis import asyncio as redis_asyncio
     from redis.asyncio import ConnectionPool
+    from redis import exceptions as redis_exceptions
 
     REDIS_AVAILABLE = True
 except ImportError:
     REDIS_AVAILABLE = False
     redis_asyncio = None  # type: ignore
     ConnectionPool = None  # type: ignore
+    redis_exceptions = None  # type: ignore
 
 from ratesync.core import RateLimiter, RateLimiterMetrics
 from ratesync.exceptions import RateLimiterAcquisitionError
@@ -321,6 +323,7 @@ class RedisRateLimiter(RateLimiter):
         self._pool = None
         self._client = None
         self._initialized = False
+        self._degraded = False
         self._metrics = RateLimiterMetrics()
         self._acquire_script = None
         self._sliding_window_script = None
@@ -345,6 +348,16 @@ class RedisRateLimiter(RateLimiter):
         """Initialize Redis connection pool and register Lua scripts.
 
         This operation is idempotent - can be called multiple times.
+
+        Honors fail_closed on backend failure: if fail_closed=True, raises
+        RateLimiterAcquisitionError. If fail_closed=False (default), logs a
+        warning and returns without raising, leaving the limiter in a
+        degraded fail-open mode where acquire()/try_acquire()/release()/
+        get_state() return permissive (allow) results until a later
+        initialize() call succeeds.
+
+        Raises:
+            RateLimiterAcquisitionError: If connection fails and fail_closed=True
         """
         if self._initialized:
             return
@@ -388,6 +401,7 @@ class RedisRateLimiter(RateLimiter):
             )
 
             self._initialized = True
+            self._degraded = False
 
             logger.info(
                 "Redis rate limiter initialized for group '%s' (rate=%s, max_concurrent=%s)",
@@ -396,7 +410,13 @@ class RedisRateLimiter(RateLimiter):
                 self._max_concurrent if self._max_concurrent else "unlimited",
             )
 
-        except (OSError, TimeoutError, ConnectionError, ValueError) as e:
+        except (
+            OSError,
+            TimeoutError,
+            ConnectionError,
+            ValueError,
+            redis_exceptions.RedisError,
+        ) as e:
             logger.error(
                 "Failed to initialize Redis rate limiter for group '%s': %s",
                 self._group_id,
@@ -409,7 +429,27 @@ class RedisRateLimiter(RateLimiter):
             if self._pool:
                 await self._pool.disconnect()
                 self._pool = None
-            raise
+
+            if self._fail_closed:
+                raise RateLimiterAcquisitionError(
+                    f"Backend failure and fail_closed=True for group '{self._group_id}': {e}",
+                    group_id=self._group_id,
+                ) from e
+
+            # Fail-open: don't let a backend outage block startup. Mark this
+            # limiter as degraded so acquire()/try_acquire()/release()/
+            # get_state() return permissive (allow) results instead of
+            # raising "not initialized", consistent with the fail-open
+            # behavior applied to backend failures that happen after a
+            # successful initialize().
+            logger.warning(
+                "Redis unavailable for group '%s', continuing in degraded "
+                "fail-open mode (fail_closed=False): %s",
+                self._group_id,
+                e,
+            )
+            self._degraded = True
+            return
 
     async def acquire(self) -> None:
         """Wait until slot is available for rate-limited operation.
@@ -421,10 +461,20 @@ class RedisRateLimiter(RateLimiter):
         IMPORTANT: If max_concurrent is configured, you MUST call release()
         when the operation is complete, or use acquire_context() instead.
 
+        In degraded fail-open mode (initialize() failed with fail_closed=False),
+        this returns immediately without acquiring a real slot.
+
         Raises:
-            RuntimeError: If rate limiter wasn't initialized
+            RuntimeError: If rate limiter wasn't initialized and not in fail-open mode
         """
         if not self._initialized:
+            if self._degraded:
+                logger.warning(
+                    "Group '%s': backend unavailable (degraded fail-open mode), "
+                    "allowing request without acquiring",
+                    self._group_id,
+                )
+                return
             raise RuntimeError(
                 f"Rate limiter for group '{self._group_id}' not initialized. "
                 "Call initialize() first."
@@ -442,61 +492,75 @@ class RedisRateLimiter(RateLimiter):
         # TTL for key cleanup (5x interval or 60 seconds for concurrency-only)
         ttl = int((1.0 / self._rate * 5) + 1) if self._rate else 60
 
-        while True:
-            now = time.time()
+        try:
+            while True:
+                now = time.time()
 
-            # Execute unified Lua script atomically - ONE round-trip!
-            result = await self._acquire_script(
-                keys=[self._rate_key, self._concurrent_key],
-                args=[
-                    now,
-                    self._interval,
-                    self._max_concurrent if self._max_concurrent else -1,
-                    ttl,
-                ],
+                # Execute unified Lua script atomically - ONE round-trip!
+                result = await self._acquire_script(
+                    keys=[self._rate_key, self._concurrent_key],
+                    args=[
+                        now,
+                        self._interval,
+                        self._max_concurrent if self._max_concurrent else -1,
+                        ttl,
+                    ],
+                )
+
+                success = int(result[0])
+                wait_ms = int(result[1])  # Exact wait time in ms, or -1 for concurrency limited
+                concurrent_count = int(result[2])
+
+                if success == 1:
+                    # Successfully acquired
+                    total_wait_ms = (time.time() - start_time) * 1000
+                    self._metrics.record_acquisition(total_wait_ms)
+
+                    if self._max_concurrent:
+                        self._metrics.record_concurrent_acquire()
+
+                    logger.debug(
+                        "Group '%s': Acquired (waited %.2fms, concurrent=%d)",
+                        self._group_id,
+                        total_wait_ms,
+                        concurrent_count,
+                    )
+                    return
+
+                # Failed to acquire - determine reason and wait appropriately
+                if wait_ms > 0:
+                    # Rate limited - sleep for EXACT wait time (with small margin)
+                    sleep_time = (wait_ms / 1000.0) + 0.001  # Add 1ms margin for clock drift
+                    logger.debug(
+                        "Group '%s': Rate limited, sleeping %.3fs (exact)",
+                        self._group_id,
+                        sleep_time,
+                    )
+                else:
+                    # Concurrency limited (wait_ms == -1) - must poll
+                    self._metrics.record_max_concurrent_reached()
+                    sleep_time = 0.005  # 5ms polling interval
+                    logger.debug(
+                        "Group '%s': Concurrency limited (%d/%s), polling",
+                        self._group_id,
+                        concurrent_count,
+                        self._max_concurrent or "∞",
+                    )
+
+                await asyncio.sleep(sleep_time)
+
+        except (KeyError, OSError, ValueError, redis_exceptions.RedisError) as e:
+            if self._fail_closed:
+                raise RateLimiterAcquisitionError(
+                    f"Backend failure and fail_closed=True for group '{self._group_id}': {e}",
+                    group_id=self._group_id,
+                ) from e
+            logger.warning(
+                "Rate limiter backend failure for group '%s', allowing request (fail_open): %s",
+                self._group_id,
+                e,
             )
-
-            success = int(result[0])
-            wait_ms = int(result[1])  # Exact wait time in ms, or -1 for concurrency limited
-            concurrent_count = int(result[2])
-
-            if success == 1:
-                # Successfully acquired
-                total_wait_ms = (time.time() - start_time) * 1000
-                self._metrics.record_acquisition(total_wait_ms)
-
-                if self._max_concurrent:
-                    self._metrics.record_concurrent_acquire()
-
-                logger.debug(
-                    "Group '%s': Acquired (waited %.2fms, concurrent=%d)",
-                    self._group_id,
-                    total_wait_ms,
-                    concurrent_count,
-                )
-                return
-
-            # Failed to acquire - determine reason and wait appropriately
-            if wait_ms > 0:
-                # Rate limited - sleep for EXACT wait time (with small margin)
-                sleep_time = (wait_ms / 1000.0) + 0.001  # Add 1ms margin for clock drift
-                logger.debug(
-                    "Group '%s': Rate limited, sleeping %.3fs (exact)",
-                    self._group_id,
-                    sleep_time,
-                )
-            else:
-                # Concurrency limited (wait_ms == -1) - must poll
-                self._metrics.record_max_concurrent_reached()
-                sleep_time = 0.005  # 5ms polling interval
-                logger.debug(
-                    "Group '%s': Concurrency limited (%d/%s), polling",
-                    self._group_id,
-                    concurrent_count,
-                    self._max_concurrent or "∞",
-                )
-
-            await asyncio.sleep(sleep_time)
+            return
 
     async def _acquire_sliding_window(self) -> None:
         """Acquire using sliding window algorithm."""
@@ -505,62 +569,76 @@ class RedisRateLimiter(RateLimiter):
         # TTL for key cleanup (window_seconds * 2)
         ttl = (self._window_seconds * 2) if self._window_seconds else 60
 
-        while True:
-            now = time.time()
+        try:
+            while True:
+                now = time.time()
 
-            # Execute sliding window Lua script atomically
-            result = await self._sliding_window_script(
-                keys=[self._window_key, self._concurrent_key],
-                args=[
-                    now,
-                    self._limit,
-                    self._window_seconds,
-                    self._max_concurrent if self._max_concurrent else -1,
-                    ttl,
-                ],
+                # Execute sliding window Lua script atomically
+                result = await self._sliding_window_script(
+                    keys=[self._window_key, self._concurrent_key],
+                    args=[
+                        now,
+                        self._limit,
+                        self._window_seconds,
+                        self._max_concurrent if self._max_concurrent else -1,
+                        ttl,
+                    ],
+                )
+
+                success = int(result[0])
+                wait_ms = int(result[1])  # Exact wait time in ms, or -1 for concurrency limited
+                concurrent_count = int(result[2])
+
+                if success == 1:
+                    # Successfully acquired
+                    total_wait_ms = (time.time() - start_time) * 1000
+                    self._metrics.record_acquisition(total_wait_ms)
+
+                    if self._max_concurrent:
+                        self._metrics.record_concurrent_acquire()
+
+                    logger.debug(
+                        "Group '%s': Acquired sliding window (waited %.2fms, concurrent=%d)",
+                        self._group_id,
+                        total_wait_ms,
+                        concurrent_count,
+                    )
+                    return
+
+                # Failed to acquire - determine reason and wait appropriately
+                if wait_ms > 0:
+                    # Window full - sleep for calculated wait time
+                    sleep_time = (wait_ms / 1000.0) + 0.001
+                    logger.debug(
+                        "Group '%s': Window full, sleeping %.3fs",
+                        self._group_id,
+                        sleep_time,
+                    )
+                else:
+                    # Concurrency limited (wait_ms == -1) - must poll
+                    self._metrics.record_max_concurrent_reached()
+                    sleep_time = 0.005  # 5ms polling interval
+                    logger.debug(
+                        "Group '%s': Concurrency limited (%d/%s), polling",
+                        self._group_id,
+                        concurrent_count,
+                        self._max_concurrent or "∞",
+                    )
+
+                await asyncio.sleep(sleep_time)
+
+        except (KeyError, OSError, ValueError, redis_exceptions.RedisError) as e:
+            if self._fail_closed:
+                raise RateLimiterAcquisitionError(
+                    f"Backend failure and fail_closed=True for group '{self._group_id}': {e}",
+                    group_id=self._group_id,
+                ) from e
+            logger.warning(
+                "Rate limiter backend failure for group '%s', allowing request (fail_open): %s",
+                self._group_id,
+                e,
             )
-
-            success = int(result[0])
-            wait_ms = int(result[1])  # Exact wait time in ms, or -1 for concurrency limited
-            concurrent_count = int(result[2])
-
-            if success == 1:
-                # Successfully acquired
-                total_wait_ms = (time.time() - start_time) * 1000
-                self._metrics.record_acquisition(total_wait_ms)
-
-                if self._max_concurrent:
-                    self._metrics.record_concurrent_acquire()
-
-                logger.debug(
-                    "Group '%s': Acquired sliding window (waited %.2fms, concurrent=%d)",
-                    self._group_id,
-                    total_wait_ms,
-                    concurrent_count,
-                )
-                return
-
-            # Failed to acquire - determine reason and wait appropriately
-            if wait_ms > 0:
-                # Window full - sleep for calculated wait time
-                sleep_time = (wait_ms / 1000.0) + 0.001
-                logger.debug(
-                    "Group '%s': Window full, sleeping %.3fs",
-                    self._group_id,
-                    sleep_time,
-                )
-            else:
-                # Concurrency limited (wait_ms == -1) - must poll
-                self._metrics.record_max_concurrent_reached()
-                sleep_time = 0.005  # 5ms polling interval
-                logger.debug(
-                    "Group '%s': Concurrency limited (%d/%s), polling",
-                    self._group_id,
-                    concurrent_count,
-                    self._max_concurrent or "∞",
-                )
-
-            await asyncio.sleep(sleep_time)
+            return
 
     async def release(self) -> None:
         """Release a concurrency slot after operation completes.
@@ -568,10 +646,20 @@ class RedisRateLimiter(RateLimiter):
         This method MUST be called after acquire() when max_concurrent is set.
         If max_concurrent is None (unlimited), this is a no-op.
 
+        In degraded fail-open mode (initialize() failed with fail_closed=False),
+        this returns immediately as a no-op.
+
         Raises:
-            RuntimeError: If rate limiter wasn't initialized
+            RuntimeError: If rate limiter wasn't initialized and not in fail-open mode
         """
         if not self._initialized:
+            if self._degraded:
+                logger.warning(
+                    "Group '%s': releasing while backend unavailable (degraded "
+                    "fail-open mode), no-op",
+                    self._group_id,
+                )
+                return
             raise RuntimeError(
                 f"Rate limiter for group '{self._group_id}' not initialized. "
                 "Call initialize() first."
@@ -580,15 +668,28 @@ class RedisRateLimiter(RateLimiter):
         if self._max_concurrent is None:
             return  # No-op if concurrency limiting is disabled
 
-        # Execute release script atomically
-        new_count = await self._release_script(keys=[self._concurrent_key])
-        self._metrics.record_concurrent_release()
+        try:
+            # Execute release script atomically
+            new_count = await self._release_script(keys=[self._concurrent_key])
+            self._metrics.record_concurrent_release()
 
-        logger.debug(
-            "Group '%s': Released (concurrent=%d)",
-            self._group_id,
-            new_count,
-        )
+            logger.debug(
+                "Group '%s': Released (concurrent=%d)",
+                self._group_id,
+                new_count,
+            )
+        except (KeyError, OSError, ValueError, redis_exceptions.RedisError) as e:
+            if self._fail_closed:
+                raise RateLimiterAcquisitionError(
+                    f"Backend failure and fail_closed=True for group '{self._group_id}': {e}",
+                    group_id=self._group_id,
+                ) from e
+            logger.warning(
+                "Rate limiter backend failure releasing slot for group '%s' (fail_open): %s",
+                self._group_id,
+                e,
+            )
+            return
 
     async def try_acquire(self, timeout: float = 0) -> bool:
         """Try to acquire slot without waiting indefinitely.
@@ -597,12 +698,21 @@ class RedisRateLimiter(RateLimiter):
             timeout: Maximum wait time in seconds (0 = don't wait)
 
         Returns:
-            True if acquired slot within timeout, False otherwise
+            True if acquired slot within timeout, False otherwise. Also
+            returns True in degraded fail-open mode (initialize() failed
+            with fail_closed=False).
 
         Raises:
-            RuntimeError: If rate limiter wasn't initialized
+            RuntimeError: If rate limiter wasn't initialized and not in fail-open mode
         """
         if not self._initialized:
+            if self._degraded:
+                logger.warning(
+                    "Group '%s': backend unavailable (degraded fail-open mode), "
+                    "allowing request without acquiring",
+                    self._group_id,
+                )
+                return True
             raise RuntimeError(
                 f"Rate limiter for group '{self._group_id}' not initialized. "
                 "Call initialize() first."
@@ -685,7 +795,7 @@ class RedisRateLimiter(RateLimiter):
 
                 await asyncio.sleep(sleep_time)
 
-        except (KeyError, OSError, ValueError) as e:
+        except (KeyError, OSError, ValueError, redis_exceptions.RedisError) as e:
             if self._fail_closed:
                 raise RateLimiterAcquisitionError(
                     f"Backend failure and fail_closed=True for group '{self._group_id}': {e}",
@@ -771,7 +881,7 @@ class RedisRateLimiter(RateLimiter):
 
                 await asyncio.sleep(sleep_time)
 
-        except (KeyError, OSError, ValueError) as e:
+        except (KeyError, OSError, ValueError, redis_exceptions.RedisError) as e:
             if self._fail_closed:
                 raise RateLimiterAcquisitionError(
                     f"Backend failure and fail_closed=True for group '{self._group_id}': {e}",
@@ -1059,25 +1169,39 @@ class RedisRateLimiter(RateLimiter):
         the configured algorithm (token_bucket or sliding_window).
 
         Returns:
-            LimiterState with current usage and availability.
+            LimiterState with current usage and availability. Also returns a
+            permissive state in degraded fail-open mode (initialize() failed
+            with fail_closed=False).
 
         Raises:
-            RuntimeError: If rate limiter wasn't initialized
+            RuntimeError: If rate limiter wasn't initialized and not in fail-open mode
         """
+        now = time.time()
+
         if not self._initialized or self._client is None:
+            if self._degraded:
+                logger.warning(
+                    "Group '%s': backend unavailable (degraded fail-open mode), "
+                    "returning permissive state",
+                    self._group_id,
+                )
+                return LimiterState(
+                    allowed=True,
+                    remaining=100,
+                    reset_at=int(now + 1.0),
+                    current_usage=0,
+                )
             raise RuntimeError(
                 f"Rate limiter for group '{self._group_id}' not initialized. "
                 "Call initialize() first."
             )
-
-        now = time.time()
 
         try:
             if self._algorithm == "sliding_window":
                 return await self._get_sliding_window_state(now)
             return await self._get_token_bucket_state(now)
 
-        except (KeyError, OSError, ValueError) as e:
+        except (KeyError, OSError, ValueError, redis_exceptions.RedisError) as e:
             if self._fail_closed:
                 raise RateLimiterAcquisitionError(
                     f"Backend failure and fail_closed=True for group '{self._group_id}': {e}",

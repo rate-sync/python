@@ -16,6 +16,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from ratesync.core import RateLimiterMetrics
+from ratesync.exceptions import RateLimiterAcquisitionError
 from ratesync.schemas import MemoryEngineConfig, RedisEngineConfig
 
 # Mark all tests in this module as requiring Redis
@@ -495,3 +496,235 @@ class TestRedisEngineConcurrencyLimiting:
             assert 0.09 <= elapsed <= 0.2  # Should respect timeout
             metrics = limiter.get_metrics()
             assert metrics.timeouts >= 1
+
+
+@pytest.mark.asyncio
+class TestRedisEngineFailClosed:
+    """Test that initialize()/acquire()/release() honor fail_closed on backend failure.
+
+    Regression coverage for a bug where fail_closed was only respected by
+    try_acquire()/get_state(): a connection failure in initialize() always
+    propagated the raw redis-py exception (even with fail_closed=False,
+    breaking the fail-open promise), and acquire()/release() never caught
+    backend failures at all.
+    """
+
+    def _redis_connection_error(self):
+        """Return the real redis-py ConnectionError class (not a builtin)."""
+        from redis import exceptions as redis_exceptions
+
+        return redis_exceptions.ConnectionError
+
+    async def test_initialize_fail_closed_true_raises_acquisition_error(self, config):
+        """initialize() with fail_closed=True wraps backend failure in RateLimiterAcquisitionError."""
+        if not REDIS_AVAILABLE:
+            pytest.skip("Redis library not installed")
+
+        limiter = RedisRateLimiter.from_config(config, "test", 1.0, fail_closed=True)
+
+        with patch("ratesync.engines.redis.redis_asyncio") as mock_redis:
+            mock_pool = AsyncMock()
+            mock_pool.disconnect = AsyncMock()
+            mock_client = AsyncMock()
+            mock_client.ping = AsyncMock(side_effect=self._redis_connection_error()("boom"))
+            mock_client.aclose = AsyncMock()
+            mock_redis.Redis.return_value = mock_client
+            mock_redis.ConnectionPool.from_url.return_value = mock_pool
+
+            with pytest.raises(RateLimiterAcquisitionError):
+                await limiter.initialize()
+
+            assert limiter.is_initialized is False
+
+    async def test_initialize_fail_closed_false_does_not_raise(self, config):
+        """initialize() with fail_closed=False (default) swallows backend failure."""
+        if not REDIS_AVAILABLE:
+            pytest.skip("Redis library not installed")
+
+        limiter = RedisRateLimiter.from_config(config, "test", 1.0, fail_closed=False)
+
+        with patch("ratesync.engines.redis.redis_asyncio") as mock_redis:
+            mock_pool = AsyncMock()
+            mock_pool.disconnect = AsyncMock()
+            mock_client = AsyncMock()
+            mock_client.ping = AsyncMock(side_effect=self._redis_connection_error()("boom"))
+            mock_client.aclose = AsyncMock()
+            mock_redis.Redis.return_value = mock_client
+            mock_redis.ConnectionPool.from_url.return_value = mock_pool
+
+            # Must NOT raise: fail-open on initialize() failure.
+            await limiter.initialize()
+
+            assert limiter.is_initialized is False
+
+    async def test_degraded_mode_acquire_does_not_raise(self, config):
+        """After a fail-open initialize() failure, acquire() allows the request."""
+        if not REDIS_AVAILABLE:
+            pytest.skip("Redis library not installed")
+
+        limiter = RedisRateLimiter.from_config(config, "test", 1.0, fail_closed=False)
+
+        with patch("ratesync.engines.redis.redis_asyncio") as mock_redis:
+            mock_client = AsyncMock()
+            mock_client.ping = AsyncMock(side_effect=self._redis_connection_error()("boom"))
+            mock_redis.Redis.return_value = mock_client
+            mock_redis.ConnectionPool.from_url.return_value = AsyncMock()
+
+            await limiter.initialize()
+
+        # Should return immediately, without touching Redis, without raising.
+        await limiter.acquire()
+
+    async def test_degraded_mode_try_acquire_returns_true(self, config):
+        """After a fail-open initialize() failure, try_acquire() returns True."""
+        if not REDIS_AVAILABLE:
+            pytest.skip("Redis library not installed")
+
+        limiter = RedisRateLimiter.from_config(config, "test", 1.0, fail_closed=False)
+
+        with patch("ratesync.engines.redis.redis_asyncio") as mock_redis:
+            mock_client = AsyncMock()
+            mock_client.ping = AsyncMock(side_effect=self._redis_connection_error()("boom"))
+            mock_redis.Redis.return_value = mock_client
+            mock_redis.ConnectionPool.from_url.return_value = AsyncMock()
+
+            await limiter.initialize()
+
+        assert await limiter.try_acquire(timeout=0) is True
+
+    async def test_degraded_mode_release_is_noop(self, config):
+        """After a fail-open initialize() failure, release() is a no-op."""
+        if not REDIS_AVAILABLE:
+            pytest.skip("Redis library not installed")
+
+        limiter = RedisRateLimiter.from_config(
+            config, "test", 1.0, max_concurrent=5, fail_closed=False
+        )
+
+        with patch("ratesync.engines.redis.redis_asyncio") as mock_redis:
+            mock_client = AsyncMock()
+            mock_client.ping = AsyncMock(side_effect=self._redis_connection_error()("boom"))
+            mock_redis.Redis.return_value = mock_client
+            mock_redis.ConnectionPool.from_url.return_value = AsyncMock()
+
+            await limiter.initialize()
+
+        # Must not raise.
+        await limiter.release()
+
+    async def test_degraded_mode_get_state_returns_permissive(self, config):
+        """After a fail-open initialize() failure, get_state() returns an allowed state."""
+        if not REDIS_AVAILABLE:
+            pytest.skip("Redis library not installed")
+
+        limiter = RedisRateLimiter.from_config(config, "test", 1.0, fail_closed=False)
+
+        with patch("ratesync.engines.redis.redis_asyncio") as mock_redis:
+            mock_client = AsyncMock()
+            mock_client.ping = AsyncMock(side_effect=self._redis_connection_error()("boom"))
+            mock_redis.Redis.return_value = mock_client
+            mock_redis.ConnectionPool.from_url.return_value = AsyncMock()
+
+            await limiter.initialize()
+
+        state = await limiter.get_state()
+        assert state.allowed is True
+
+    async def test_acquire_after_successful_init_fail_closed_true_raises(self, config):
+        """acquire() with fail_closed=True raises RateLimiterAcquisitionError on backend failure."""
+        if not REDIS_AVAILABLE:
+            pytest.skip("Redis library not installed")
+
+        limiter = RedisRateLimiter.from_config(config, "test", 1.0, fail_closed=True)
+
+        with patch("ratesync.engines.redis.redis_asyncio") as mock_redis:
+            mock_pool = AsyncMock()
+            mock_client = AsyncMock()
+            mock_client.ping = AsyncMock()
+            mock_client.register_script = MagicMock(
+                return_value=AsyncMock(side_effect=self._redis_connection_error()("boom"))
+            )
+            mock_redis.Redis.return_value = mock_client
+            mock_redis.ConnectionPool.from_url.return_value = mock_pool
+
+            await limiter.initialize()
+            assert limiter.is_initialized is True
+
+            with pytest.raises(RateLimiterAcquisitionError):
+                await limiter.acquire()
+
+    async def test_acquire_after_successful_init_fail_closed_false_allows(self, config):
+        """acquire() with fail_closed=False (default) allows the request on backend failure."""
+        if not REDIS_AVAILABLE:
+            pytest.skip("Redis library not installed")
+
+        limiter = RedisRateLimiter.from_config(config, "test", 1.0, fail_closed=False)
+
+        with patch("ratesync.engines.redis.redis_asyncio") as mock_redis:
+            mock_pool = AsyncMock()
+            mock_client = AsyncMock()
+            mock_client.ping = AsyncMock()
+            mock_client.register_script = MagicMock(
+                return_value=AsyncMock(side_effect=self._redis_connection_error()("boom"))
+            )
+            mock_redis.Redis.return_value = mock_client
+            mock_redis.ConnectionPool.from_url.return_value = mock_pool
+
+            await limiter.initialize()
+            assert limiter.is_initialized is True
+
+            # Must not raise: fail-open on backend failure after successful init.
+            await limiter.acquire()
+
+    async def test_release_after_successful_init_fail_closed_true_raises(self, config):
+        """release() with fail_closed=True raises RateLimiterAcquisitionError on backend failure."""
+        if not REDIS_AVAILABLE:
+            pytest.skip("Redis library not installed")
+
+        limiter = RedisRateLimiter.from_config(
+            config, "test", 1.0, max_concurrent=5, fail_closed=True
+        )
+
+        with patch("ratesync.engines.redis.redis_asyncio") as mock_redis:
+            mock_pool = AsyncMock()
+            mock_client = AsyncMock()
+            mock_client.ping = AsyncMock()
+            # register_script is called 3 times (acquire, sliding_window, release);
+            # make every registered script raise, since release() only calls
+            # the release script but initialize() registers all three eagerly.
+            mock_client.register_script = MagicMock(
+                return_value=AsyncMock(side_effect=self._redis_connection_error()("boom"))
+            )
+            mock_redis.Redis.return_value = mock_client
+            mock_redis.ConnectionPool.from_url.return_value = mock_pool
+
+            await limiter.initialize()
+            assert limiter.is_initialized is True
+
+            with pytest.raises(RateLimiterAcquisitionError):
+                await limiter.release()
+
+    async def test_release_after_successful_init_fail_closed_false_allows(self, config):
+        """release() with fail_closed=False (default) swallows backend failure."""
+        if not REDIS_AVAILABLE:
+            pytest.skip("Redis library not installed")
+
+        limiter = RedisRateLimiter.from_config(
+            config, "test", 1.0, max_concurrent=5, fail_closed=False
+        )
+
+        with patch("ratesync.engines.redis.redis_asyncio") as mock_redis:
+            mock_pool = AsyncMock()
+            mock_client = AsyncMock()
+            mock_client.ping = AsyncMock()
+            mock_client.register_script = MagicMock(
+                return_value=AsyncMock(side_effect=self._redis_connection_error()("boom"))
+            )
+            mock_redis.Redis.return_value = mock_client
+            mock_redis.ConnectionPool.from_url.return_value = mock_pool
+
+            await limiter.initialize()
+            assert limiter.is_initialized is True
+
+            # Must not raise.
+            await limiter.release()

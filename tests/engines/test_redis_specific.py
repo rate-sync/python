@@ -101,8 +101,14 @@ class TestRedisEngineSpecific:
             await limiter.disconnect()
 
     async def test_fail_closed_on_connection_error(self) -> None:
-        """fail_closed=True raises error on connection failure."""
+        """fail_closed=True raises RateLimiterAcquisitionError on connection failure.
+
+        Checks the exact exception type (not just "some Exception") so this
+        test actually fails if initialize() ever regresses to leaking the raw
+        redis-py exception instead of wrapping it.
+        """
         from ratesync.engines.redis import RedisRateLimiter
+        from ratesync.exceptions import RateLimiterAcquisitionError
 
         # Use invalid URL
         limiter = RedisRateLimiter(
@@ -110,10 +116,43 @@ class TestRedisEngineSpecific:
             group_id="fail_closed_test",
             rate_per_second=10.0,
             fail_closed=True,
+            socket_connect_timeout=2,
+            socket_timeout=2,
         )
 
-        with pytest.raises(Exception):
+        with pytest.raises(RateLimiterAcquisitionError):
             await limiter.initialize()
+
+        assert limiter.is_initialized is False
+
+    async def test_fail_open_on_connection_error(self) -> None:
+        """fail_closed=False (default) does not raise on connection failure.
+
+        initialize() must swallow the backend failure and leave the limiter
+        in a degraded fail-open mode where acquire()/try_acquire()/release()/
+        get_state() all return permissive (allow) results instead of raising.
+        """
+        from ratesync.engines.redis import RedisRateLimiter
+
+        limiter = RedisRateLimiter(
+            url="redis://invalid-host:6379/0",
+            group_id="fail_open_test",
+            rate_per_second=10.0,
+            max_concurrent=5,
+            fail_closed=False,
+            socket_connect_timeout=2,
+            socket_timeout=2,
+        )
+
+        # Must not raise.
+        await limiter.initialize()
+        assert limiter.is_initialized is False
+
+        assert await limiter.try_acquire(timeout=0) is True
+        await limiter.acquire()  # Must not raise
+        state = await limiter.get_state()
+        assert state.allowed is True
+        await limiter.release()  # Must not raise
 
     async def test_distributed_group_coordination(self) -> None:
         """Multiple limiters with same group_id share state."""
@@ -174,7 +213,7 @@ class TestRedisEngineSpecific:
             # Should allow 5 requests
             for i in range(5):
                 result = await limiter.try_acquire(timeout=0)
-                assert result is True, f"Request {i+1} should succeed"
+                assert result is True, f"Request {i + 1} should succeed"
 
             # 6th should fail
             result = await limiter.try_acquire(timeout=0)

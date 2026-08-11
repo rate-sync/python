@@ -614,6 +614,57 @@ class TestPostgresEngineSpecific:
 
         assert limiter_open.fail_closed is False
 
+    async def test_fail_closed_on_connection_error(self) -> None:
+        """fail_closed=True raises RateLimiterAcquisitionError on connection failure.
+
+        Checks the exact exception type (not just "some Exception") so this
+        test actually fails if initialize() ever regresses to leaking the raw
+        asyncpg exception instead of wrapping it.
+        """
+        from ratesync.engines.postgres import PostgresRateLimiter
+        from ratesync.exceptions import RateLimiterAcquisitionError
+
+        limiter = PostgresRateLimiter(
+            connection_url="postgresql://postgres:postgres@invalid-host:5432/ratesync",
+            group_id="fail_closed_conn_test",
+            rate_per_second=10.0,
+            table_name="fail_closed_conn_test",
+            fail_closed=True,
+        )
+
+        with pytest.raises(RateLimiterAcquisitionError):
+            await limiter.initialize()
+
+        assert limiter.is_initialized is False
+
+    async def test_fail_open_on_connection_error(self) -> None:
+        """fail_closed=False (default) does not raise on connection failure.
+
+        initialize() must swallow the backend failure and leave the limiter
+        in a degraded fail-open mode where acquire()/try_acquire()/release()/
+        get_state() all return permissive (allow) results instead of raising.
+        """
+        from ratesync.engines.postgres import PostgresRateLimiter
+
+        limiter = PostgresRateLimiter(
+            connection_url="postgresql://postgres:postgres@invalid-host:5432/ratesync",
+            group_id="fail_open_conn_test",
+            rate_per_second=10.0,
+            max_concurrent=5,
+            table_name="fail_open_conn_test",
+            fail_closed=False,
+        )
+
+        # Must not raise.
+        await limiter.initialize()
+        assert limiter.is_initialized is False
+
+        assert await limiter.try_acquire(timeout=0) is True
+        await limiter.acquire()  # Must not raise
+        state = await limiter.get_state()
+        assert state.allowed is True
+        await limiter.release()  # Must not raise
+
     async def test_sliding_window_full_workflow(self) -> None:
         """PostgreSQL sliding window works correctly end-to-end."""
         from ratesync.engines.postgres import PostgresRateLimiter
@@ -636,7 +687,7 @@ class TestPostgresEngineSpecific:
             # Should allow 3 requests
             for i in range(3):
                 result = await limiter.try_acquire(timeout=0)
-                assert result is True, f"Request {i+1} should succeed"
+                assert result is True, f"Request {i + 1} should succeed"
 
             # 4th should fail
             result = await limiter.try_acquire(timeout=0)

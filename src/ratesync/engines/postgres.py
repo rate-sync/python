@@ -183,6 +183,7 @@ class PostgresRateLimiter(RateLimiter):
 
         self._pool = None
         self._initialized = False
+        self._degraded = False
         self._metrics = RateLimiterMetrics()
         self._owned_pool = None
 
@@ -203,6 +204,16 @@ class PostgresRateLimiter(RateLimiter):
         If False, assumes table already exists.
 
         This operation is idempotent - can be called multiple times.
+
+        Honors fail_closed on backend failure: if fail_closed=True, raises
+        RateLimiterAcquisitionError. If fail_closed=False (default), logs a
+        warning and returns without raising, leaving the limiter in a
+        degraded fail-open mode where acquire()/try_acquire()/release()/
+        get_state() return permissive (allow) results until a later
+        initialize() call succeeds.
+
+        Raises:
+            RateLimiterAcquisitionError: If connection fails and fail_closed=True
         """
         if self._initialized:
             return
@@ -233,6 +244,7 @@ class PostgresRateLimiter(RateLimiter):
                 await self._create_table_if_not_exists()
 
             self._initialized = True
+            self._degraded = False
 
             logger.info(
                 "PostgreSQL rate limiter initialized for group '%s' (rate=%s, max_concurrent=%s)",
@@ -241,7 +253,14 @@ class PostgresRateLimiter(RateLimiter):
                 self._max_concurrent if self._max_concurrent else "unlimited",
             )
 
-        except (OSError, TimeoutError, ConnectionError, ValueError) as e:
+        except (
+            OSError,
+            TimeoutError,
+            ConnectionError,
+            ValueError,
+            asyncpg_module.exceptions.PostgresConnectionError,
+            asyncpg_module.exceptions.InterfaceError,
+        ) as e:
             logger.error(
                 "Failed to initialize PostgreSQL rate limiter for group '%s': %s",
                 self._group_id,
@@ -252,7 +271,27 @@ class PostgresRateLimiter(RateLimiter):
                 await self._pool.close()
                 self._pool = None
                 self._owned_pool = None
-            raise
+
+            if self._fail_closed:
+                raise RateLimiterAcquisitionError(
+                    f"Backend failure and fail_closed=True for group '{self._group_id}': {e}",
+                    group_id=self._group_id,
+                ) from e
+
+            # Fail-open: don't let a backend outage block startup. Mark this
+            # limiter as degraded so acquire()/try_acquire()/release()/
+            # get_state() return permissive (allow) results instead of
+            # raising "not initialized", consistent with the fail-open
+            # behavior applied to backend failures that happen after a
+            # successful initialize().
+            logger.warning(
+                "PostgreSQL unavailable for group '%s', continuing in degraded "
+                "fail-open mode (fail_closed=False): %s",
+                self._group_id,
+                e,
+            )
+            self._degraded = True
+            return
 
     async def _create_table_if_not_exists(self) -> None:
         """Create rate limiter tables if they don't exist."""
@@ -301,10 +340,20 @@ class PostgresRateLimiter(RateLimiter):
         IMPORTANT: If max_concurrent is configured, you MUST call release()
         when the operation is complete, or use acquire_context() instead.
 
+        In degraded fail-open mode (initialize() failed with fail_closed=False),
+        this returns immediately without acquiring a real slot.
+
         Raises:
-            RuntimeError: If rate limiter wasn't initialized
+            RuntimeError: If rate limiter wasn't initialized and not in fail-open mode
         """
         if not self._initialized:
+            if self._degraded:
+                logger.warning(
+                    "Group '%s': backend unavailable (degraded fail-open mode), "
+                    "allowing request without acquiring",
+                    self._group_id,
+                )
+                return
             raise RuntimeError(
                 f"Rate limiter for group '{self._group_id}' not initialized. "
                 "Call initialize() first."
@@ -319,139 +368,16 @@ class PostgresRateLimiter(RateLimiter):
         """Acquire using token bucket algorithm."""
         start_time = time.time()
 
-        while True:
-            now_ts = time.time()
+        try:
+            while True:
+                now_ts = time.time()
 
-            async with self._pool.acquire() as conn:
-                # Try to get current state
-                row = await conn.fetchrow(
-                    f"""
-                    SELECT last_acquisition_at, concurrent_count, version
-                    FROM {self._full_table_name}
-                    WHERE group_id = $1
-                    FOR UPDATE
-                    """,
-                    self._group_id,
-                )
-
-                if row is None:
-                    # First acquisition for this group - insert new row
-                    try:
-                        await conn.execute(
-                            f"""
-                            INSERT INTO {self._full_table_name}
-                            (group_id, last_acquisition_at, concurrent_count, version)
-                            VALUES ($1, to_timestamp($2), $3, 1)
-                            """,
-                            self._group_id,
-                            now_ts,
-                            1 if self._max_concurrent else 0,
-                        )
-                        # Successfully acquired
-                        wait_time_ms = (time.time() - start_time) * 1000
-                        self._metrics.record_acquisition(wait_time_ms)
-                        if self._max_concurrent:
-                            self._metrics.record_concurrent_acquire()
-                        logger.debug(
-                            "Group '%s': First acquisition (waited %.2fms)",
-                            self._group_id,
-                            wait_time_ms,
-                        )
-                        return
-                    except asyncpg_module.exceptions.UniqueViolationError:
-                        # Race condition - another process inserted first, retry
-                        continue
-
-                # Check rate limiting
-                rate_ok = True
-                if self._interval is not None:
-                    last_acq = row["last_acquisition_at"].timestamp()
-                    elapsed = now_ts - last_acq
-                    required_interval = self._interval - self._timing_margin_s
-                    rate_ok = elapsed >= required_interval
-
-                # Check concurrency limiting
-                concurrent_ok = True
-                current_concurrent = row["concurrent_count"]
-                if self._max_concurrent is not None:
-                    if current_concurrent >= self._max_concurrent:
-                        concurrent_ok = False
-                        self._metrics.record_max_concurrent_reached()
-
-                if rate_ok and concurrent_ok:
-                    # Can acquire - update atomically
-                    new_concurrent = (
-                        current_concurrent + 1 if self._max_concurrent else current_concurrent
-                    )
-
-                    result = await conn.execute(
-                        f"""
-                        UPDATE {self._full_table_name}
-                        SET last_acquisition_at = to_timestamp($1),
-                            concurrent_count = $2,
-                            version = version + 1
-                        WHERE group_id = $3 AND version = $4
-                        """,
-                        now_ts,
-                        new_concurrent,
-                        self._group_id,
-                        row["version"],
-                    )
-
-                    if result == "UPDATE 1":
-                        # Successfully acquired
-                        wait_time_ms = (time.time() - start_time) * 1000
-                        self._metrics.record_acquisition(wait_time_ms)
-                        if self._max_concurrent:
-                            self._metrics.record_concurrent_acquire()
-                        logger.debug(
-                            "Group '%s': Acquired (waited %.2fms, concurrent=%d)",
-                            self._group_id,
-                            wait_time_ms,
-                            new_concurrent,
-                        )
-                        return
-
-                    # Optimistic lock failed, retry
-                    await asyncio.sleep(0.001)
-                    continue
-
-                # Need to wait
-                if not rate_ok:
-                    # Wait for rate interval
-                    last_acq = row["last_acquisition_at"].timestamp()
-                    wait_time = self._interval - (now_ts - last_acq)
-                    await asyncio.sleep(max(wait_time, 0.01))
-                else:
-                    # Wait for concurrency slot
-                    await asyncio.sleep(0.01)
-
-    async def _acquire_sliding_window(self) -> None:
-        """Acquire using sliding window algorithm."""
-        start_time = time.time()
-
-        while True:
-            now_ts = time.time()
-            cutoff_ts = now_ts - self._window_seconds
-
-            async with self._pool.acquire() as conn:
-                # Clean old entries and count current in one transaction
-                async with conn.transaction():
-                    # Delete expired entries
-                    await conn.execute(
-                        f"""
-                        DELETE FROM {self._window_table_name}
-                        WHERE group_id = $1 AND timestamp_at < to_timestamp($2)
-                        """,
-                        self._group_id,
-                        cutoff_ts,
-                    )
-
-                    # Lock state row first to serialize concurrent access
-                    # This prevents race conditions in the count/insert sequence
+                async with self._pool.acquire() as conn:
+                    # Try to get current state
                     row = await conn.fetchrow(
                         f"""
-                        SELECT concurrent_count FROM {self._full_table_name}
+                        SELECT last_acquisition_at, concurrent_count, version
+                        FROM {self._full_table_name}
                         WHERE group_id = $1
                         FOR UPDATE
                         """,
@@ -459,93 +385,256 @@ class PostgresRateLimiter(RateLimiter):
                     )
 
                     if row is None:
-                        # First time - insert state row with lock
+                        # First acquisition for this group - insert new row
                         try:
                             await conn.execute(
                                 f"""
                                 INSERT INTO {self._full_table_name}
                                 (group_id, last_acquisition_at, concurrent_count, version)
-                                VALUES ($1, to_timestamp($2), 0, 1)
+                                VALUES ($1, to_timestamp($2), $3, 1)
                                 """,
                                 self._group_id,
                                 now_ts,
+                                1 if self._max_concurrent else 0,
                             )
-                        except asyncpg_module.exceptions.UniqueViolationError:
-                            # Race condition - another process inserted, retry
-                            continue
-
-                    # Now count current entries in window (with lock held)
-                    current_count = await conn.fetchval(
-                        f"""
-                        SELECT COUNT(*) FROM {self._window_table_name}
-                        WHERE group_id = $1
-                        """,
-                        self._group_id,
-                    )
-
-                    # Check if within limit
-                    if current_count < self._limit:
-                        # Check concurrency limit if configured
-                        concurrent_ok = True
-                        if self._max_concurrent is not None:
-                            current_concurrent = row["concurrent_count"] if row else 0
-                            if current_concurrent >= self._max_concurrent:
-                                concurrent_ok = False
-                                self._metrics.record_max_concurrent_reached()
-                            else:
-                                # Increment concurrent count
-                                await conn.execute(
-                                    f"""
-                                    UPDATE {self._full_table_name}
-                                    SET concurrent_count = concurrent_count + 1,
-                                        version = version + 1
-                                    WHERE group_id = $1
-                                    """,
-                                    self._group_id,
-                                )
-
-                        if concurrent_ok:
-                            # Insert new timestamp entry
-                            await conn.execute(
-                                f"""
-                                INSERT INTO {self._window_table_name}
-                                (group_id, timestamp_at)
-                                VALUES ($1, to_timestamp($2))
-                                """,
-                                self._group_id,
-                                now_ts,
-                            )
-
                             # Successfully acquired
                             wait_time_ms = (time.time() - start_time) * 1000
                             self._metrics.record_acquisition(wait_time_ms)
                             if self._max_concurrent:
                                 self._metrics.record_concurrent_acquire()
                             logger.debug(
-                                "Group '%s': Acquired sliding window (waited %.2fms)",
+                                "Group '%s': First acquisition (waited %.2fms)",
                                 self._group_id,
                                 wait_time_ms,
                             )
                             return
+                        except asyncpg_module.exceptions.UniqueViolationError:
+                            # Race condition - another process inserted first, retry
+                            continue
 
-                    # Need to wait - find oldest entry to calculate wait time
-                    oldest = await conn.fetchval(
-                        f"""
-                        SELECT MIN(timestamp_at) FROM {self._window_table_name}
-                        WHERE group_id = $1
-                        """,
-                        self._group_id,
-                    )
+                    # Check rate limiting
+                    rate_ok = True
+                    if self._interval is not None:
+                        last_acq = row["last_acquisition_at"].timestamp()
+                        elapsed = now_ts - last_acq
+                        required_interval = self._interval - self._timing_margin_s
+                        rate_ok = elapsed >= required_interval
 
-            # Calculate wait time
-            if oldest is not None:
-                oldest_ts = oldest.timestamp()
-                wait_until = oldest_ts + self._window_seconds
-                wait_time = max(0.01, wait_until - time.time())
-            else:
-                wait_time = 0.01
+                    # Check concurrency limiting
+                    concurrent_ok = True
+                    current_concurrent = row["concurrent_count"]
+                    if self._max_concurrent is not None:
+                        if current_concurrent >= self._max_concurrent:
+                            concurrent_ok = False
+                            self._metrics.record_max_concurrent_reached()
 
-            await asyncio.sleep(wait_time)
+                    if rate_ok and concurrent_ok:
+                        # Can acquire - update atomically
+                        new_concurrent = (
+                            current_concurrent + 1 if self._max_concurrent else current_concurrent
+                        )
+
+                        result = await conn.execute(
+                            f"""
+                            UPDATE {self._full_table_name}
+                            SET last_acquisition_at = to_timestamp($1),
+                                concurrent_count = $2,
+                                version = version + 1
+                            WHERE group_id = $3 AND version = $4
+                            """,
+                            now_ts,
+                            new_concurrent,
+                            self._group_id,
+                            row["version"],
+                        )
+
+                        if result == "UPDATE 1":
+                            # Successfully acquired
+                            wait_time_ms = (time.time() - start_time) * 1000
+                            self._metrics.record_acquisition(wait_time_ms)
+                            if self._max_concurrent:
+                                self._metrics.record_concurrent_acquire()
+                            logger.debug(
+                                "Group '%s': Acquired (waited %.2fms, concurrent=%d)",
+                                self._group_id,
+                                wait_time_ms,
+                                new_concurrent,
+                            )
+                            return
+
+                        # Optimistic lock failed, retry
+                        await asyncio.sleep(0.001)
+                        continue
+
+                    # Need to wait
+                    if not rate_ok:
+                        # Wait for rate interval
+                        last_acq = row["last_acquisition_at"].timestamp()
+                        wait_time = self._interval - (now_ts - last_acq)
+                        await asyncio.sleep(max(wait_time, 0.01))
+                    else:
+                        # Wait for concurrency slot
+                        await asyncio.sleep(0.01)
+
+        except (
+            KeyError,
+            OSError,
+            ValueError,
+            asyncpg_module.exceptions.PostgresConnectionError,
+            asyncpg_module.exceptions.InterfaceError,
+        ) as e:
+            if self._fail_closed:
+                raise RateLimiterAcquisitionError(
+                    f"Backend failure and fail_closed=True for group '{self._group_id}': {e}",
+                    group_id=self._group_id,
+                ) from e
+            logger.warning(
+                "Rate limiter backend failure for group '%s', allowing request (fail_open): %s",
+                self._group_id,
+                e,
+            )
+            return
+
+    async def _acquire_sliding_window(self) -> None:
+        """Acquire using sliding window algorithm."""
+        start_time = time.time()
+
+        try:
+            while True:
+                now_ts = time.time()
+                cutoff_ts = now_ts - self._window_seconds
+
+                async with self._pool.acquire() as conn:
+                    # Clean old entries and count current in one transaction
+                    async with conn.transaction():
+                        # Delete expired entries
+                        await conn.execute(
+                            f"""
+                            DELETE FROM {self._window_table_name}
+                            WHERE group_id = $1 AND timestamp_at < to_timestamp($2)
+                            """,
+                            self._group_id,
+                            cutoff_ts,
+                        )
+
+                        # Lock state row first to serialize concurrent access
+                        # This prevents race conditions in the count/insert sequence
+                        row = await conn.fetchrow(
+                            f"""
+                            SELECT concurrent_count FROM {self._full_table_name}
+                            WHERE group_id = $1
+                            FOR UPDATE
+                            """,
+                            self._group_id,
+                        )
+
+                        if row is None:
+                            # First time - insert state row with lock
+                            try:
+                                await conn.execute(
+                                    f"""
+                                    INSERT INTO {self._full_table_name}
+                                    (group_id, last_acquisition_at, concurrent_count, version)
+                                    VALUES ($1, to_timestamp($2), 0, 1)
+                                    """,
+                                    self._group_id,
+                                    now_ts,
+                                )
+                            except asyncpg_module.exceptions.UniqueViolationError:
+                                # Race condition - another process inserted, retry
+                                continue
+
+                        # Now count current entries in window (with lock held)
+                        current_count = await conn.fetchval(
+                            f"""
+                            SELECT COUNT(*) FROM {self._window_table_name}
+                            WHERE group_id = $1
+                            """,
+                            self._group_id,
+                        )
+
+                        # Check if within limit
+                        if current_count < self._limit:
+                            # Check concurrency limit if configured
+                            concurrent_ok = True
+                            if self._max_concurrent is not None:
+                                current_concurrent = row["concurrent_count"] if row else 0
+                                if current_concurrent >= self._max_concurrent:
+                                    concurrent_ok = False
+                                    self._metrics.record_max_concurrent_reached()
+                                else:
+                                    # Increment concurrent count
+                                    await conn.execute(
+                                        f"""
+                                        UPDATE {self._full_table_name}
+                                        SET concurrent_count = concurrent_count + 1,
+                                            version = version + 1
+                                        WHERE group_id = $1
+                                        """,
+                                        self._group_id,
+                                    )
+
+                            if concurrent_ok:
+                                # Insert new timestamp entry
+                                await conn.execute(
+                                    f"""
+                                    INSERT INTO {self._window_table_name}
+                                    (group_id, timestamp_at)
+                                    VALUES ($1, to_timestamp($2))
+                                    """,
+                                    self._group_id,
+                                    now_ts,
+                                )
+
+                                # Successfully acquired
+                                wait_time_ms = (time.time() - start_time) * 1000
+                                self._metrics.record_acquisition(wait_time_ms)
+                                if self._max_concurrent:
+                                    self._metrics.record_concurrent_acquire()
+                                logger.debug(
+                                    "Group '%s': Acquired sliding window (waited %.2fms)",
+                                    self._group_id,
+                                    wait_time_ms,
+                                )
+                                return
+
+                        # Need to wait - find oldest entry to calculate wait time
+                        oldest = await conn.fetchval(
+                            f"""
+                            SELECT MIN(timestamp_at) FROM {self._window_table_name}
+                            WHERE group_id = $1
+                            """,
+                            self._group_id,
+                        )
+
+                # Calculate wait time
+                if oldest is not None:
+                    oldest_ts = oldest.timestamp()
+                    wait_until = oldest_ts + self._window_seconds
+                    wait_time = max(0.01, wait_until - time.time())
+                else:
+                    wait_time = 0.01
+
+                await asyncio.sleep(wait_time)
+
+        except (
+            KeyError,
+            OSError,
+            ValueError,
+            asyncpg_module.exceptions.PostgresConnectionError,
+            asyncpg_module.exceptions.InterfaceError,
+        ) as e:
+            if self._fail_closed:
+                raise RateLimiterAcquisitionError(
+                    f"Backend failure and fail_closed=True for group '{self._group_id}': {e}",
+                    group_id=self._group_id,
+                ) from e
+            logger.warning(
+                "Rate limiter backend failure for group '%s', allowing request (fail_open): %s",
+                self._group_id,
+                e,
+            )
+            return
 
     async def release(self) -> None:
         """Release a concurrency slot after operation completes.
@@ -553,10 +642,20 @@ class PostgresRateLimiter(RateLimiter):
         This method MUST be called after acquire() when max_concurrent is set.
         If max_concurrent is None (unlimited), this is a no-op.
 
+        In degraded fail-open mode (initialize() failed with fail_closed=False),
+        this returns immediately as a no-op.
+
         Raises:
-            RuntimeError: If rate limiter wasn't initialized
+            RuntimeError: If rate limiter wasn't initialized and not in fail-open mode
         """
         if not self._initialized:
+            if self._degraded:
+                logger.warning(
+                    "Group '%s': releasing while backend unavailable (degraded "
+                    "fail-open mode), no-op",
+                    self._group_id,
+                )
+                return
             raise RuntimeError(
                 f"Rate limiter for group '{self._group_id}' not initialized. "
                 "Call initialize() first."
@@ -565,24 +664,43 @@ class PostgresRateLimiter(RateLimiter):
         if self._max_concurrent is None:
             return  # No-op if concurrency limiting is disabled
 
-        # Decrement counter atomically
-        async with self._pool.acquire() as conn:
-            result = await conn.execute(
-                f"""
-                UPDATE {self._full_table_name}
-                SET concurrent_count = GREATEST(concurrent_count - 1, 0),
-                    version = version + 1
-                WHERE group_id = $1
-                """,
-                self._group_id,
-            )
-
-            if result == "UPDATE 1":
-                self._metrics.record_concurrent_release()
-                logger.debug(
-                    "Group '%s': Released concurrency slot",
+        try:
+            # Decrement counter atomically
+            async with self._pool.acquire() as conn:
+                result = await conn.execute(
+                    f"""
+                    UPDATE {self._full_table_name}
+                    SET concurrent_count = GREATEST(concurrent_count - 1, 0),
+                        version = version + 1
+                    WHERE group_id = $1
+                    """,
                     self._group_id,
                 )
+
+                if result == "UPDATE 1":
+                    self._metrics.record_concurrent_release()
+                    logger.debug(
+                        "Group '%s': Released concurrency slot",
+                        self._group_id,
+                    )
+        except (
+            KeyError,
+            OSError,
+            ValueError,
+            asyncpg_module.exceptions.PostgresConnectionError,
+            asyncpg_module.exceptions.InterfaceError,
+        ) as e:
+            if self._fail_closed:
+                raise RateLimiterAcquisitionError(
+                    f"Backend failure and fail_closed=True for group '{self._group_id}': {e}",
+                    group_id=self._group_id,
+                ) from e
+            logger.warning(
+                "Rate limiter backend failure releasing slot for group '%s' (fail_open): %s",
+                self._group_id,
+                e,
+            )
+            return
 
     async def try_acquire(self, timeout: float = 0) -> bool:
         """Try to acquire slot without waiting indefinitely.
@@ -591,12 +709,21 @@ class PostgresRateLimiter(RateLimiter):
             timeout: Maximum wait time in seconds (0 = don't wait)
 
         Returns:
-            True if acquired slot within timeout, False otherwise
+            True if acquired slot within timeout, False otherwise. Also
+            returns True in degraded fail-open mode (initialize() failed
+            with fail_closed=False).
 
         Raises:
-            RuntimeError: If rate limiter wasn't initialized
+            RuntimeError: If rate limiter wasn't initialized and not in fail-open mode
         """
         if not self._initialized:
+            if self._degraded:
+                logger.warning(
+                    "Group '%s': backend unavailable (degraded fail-open mode), "
+                    "allowing request without acquiring",
+                    self._group_id,
+                )
+                return True
             raise RuntimeError(
                 f"Rate limiter for group '{self._group_id}' not initialized. "
                 "Call initialize() first."
@@ -703,7 +830,13 @@ class PostgresRateLimiter(RateLimiter):
                     self._metrics.record_timeout()
                     return False
 
-        except (KeyError, OSError, ValueError) as e:
+        except (
+            KeyError,
+            OSError,
+            ValueError,
+            asyncpg_module.exceptions.PostgresConnectionError,
+            asyncpg_module.exceptions.InterfaceError,
+        ) as e:
             if self._fail_closed:
                 raise RateLimiterAcquisitionError(
                     f"Backend failure and fail_closed=True for group '{self._group_id}': {e}",
@@ -825,7 +958,13 @@ class PostgresRateLimiter(RateLimiter):
                     self._metrics.record_timeout()
                     return False
 
-        except (KeyError, OSError, ValueError) as e:
+        except (
+            KeyError,
+            OSError,
+            ValueError,
+            asyncpg_module.exceptions.PostgresConnectionError,
+            asyncpg_module.exceptions.InterfaceError,
+        ) as e:
             if self._fail_closed:
                 raise RateLimiterAcquisitionError(
                     f"Backend failure and fail_closed=True for group '{self._group_id}': {e}",
@@ -1000,25 +1139,45 @@ class PostgresRateLimiter(RateLimiter):
         the configured algorithm (token_bucket or sliding_window).
 
         Returns:
-            LimiterState with current usage and availability.
+            LimiterState with current usage and availability. Also returns a
+            permissive state in degraded fail-open mode (initialize() failed
+            with fail_closed=False).
 
         Raises:
-            RuntimeError: If rate limiter wasn't initialized
+            RuntimeError: If rate limiter wasn't initialized and not in fail-open mode
         """
+        now = time.time()
+
         if not self._initialized or self._pool is None:
+            if self._degraded:
+                logger.warning(
+                    "Group '%s': backend unavailable (degraded fail-open mode), "
+                    "returning permissive state",
+                    self._group_id,
+                )
+                return LimiterState(
+                    allowed=True,
+                    remaining=100,
+                    reset_at=int(now + 1.0),
+                    current_usage=0,
+                )
             raise RuntimeError(
                 f"Rate limiter for group '{self._group_id}' not initialized. "
                 "Call initialize() first."
             )
-
-        now = time.time()
 
         try:
             if self._algorithm == "sliding_window":
                 return await self._get_sliding_window_state(now)
             return await self._get_token_bucket_state(now)
 
-        except (KeyError, OSError, ValueError) as e:
+        except (
+            KeyError,
+            OSError,
+            ValueError,
+            asyncpg_module.exceptions.PostgresConnectionError,
+            asyncpg_module.exceptions.InterfaceError,
+        ) as e:
             if self._fail_closed:
                 raise RateLimiterAcquisitionError(
                     f"Backend failure and fail_closed=True for group '{self._group_id}': {e}",
