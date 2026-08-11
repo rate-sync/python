@@ -5,6 +5,27 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.1] - 2026-08-11
+
+### Fixed
+- `fail_closed` was silently ignored by `initialize()` on both the Redis and PostgreSQL
+  engines, and was never respected at all by the blocking `acquire()` and `release()`
+  methods — only `try_acquire()` and `get_state()` honored it. A backend connection
+  failure during `initialize()` always propagated the raw driver exception regardless
+  of `fail_closed`, breaking the fail-open promise (`fail_closed=False`, the default)
+  right at startup. All five methods (`initialize()`, `acquire()`, `try_acquire()`,
+  `release()`, `get_state()`) now consistently raise `RateLimiterAcquisitionError` when
+  `fail_closed=True`, or log a warning and return a permissive result when
+  `fail_closed=False`.
+- The `except` clauses implementing `fail_closed` never actually matched real
+  `redis-py`/`asyncpg` exceptions — their exception hierarchies don't inherit from
+  Python's builtin `OSError`/`ConnectionError`/etc. — so the `fail_closed` contract
+  was effectively unenforceable against a real backend outage even where it looked
+  implemented. Both engines now also catch the driver-specific connection exception
+  types.
+- `ratesync.__version__` still reported `0.3.0` after the `0.4.0` release (drift
+  between `pyproject.toml` and `__init__.py`).
+
 ## [0.4.0] - 2026-03-20
 
 ### Changed
