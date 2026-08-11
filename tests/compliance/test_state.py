@@ -10,6 +10,7 @@ import pytest
 from ratesync.schemas import LimiterState
 from compliance.utils import (
     EngineFactory,
+    get_engine_params,
     get_engines_with,
     get_unit_test_engines,
 )
@@ -20,8 +21,14 @@ pytestmark = [pytest.mark.compliance, pytest.mark.asyncio]
 # Engines that support get_state and don't require infrastructure (for unit tests)
 STATE_UNIT_ENGINES = [e for e in get_engines_with("get_state") if e in get_unit_test_engines()]
 
-# All engines that support get_state (includes Redis/PostgreSQL for integration tests)
-STATE_CAPABLE_ENGINES = get_engines_with("get_state")
+# All engines that support get_state (includes Redis/PostgreSQL for integration
+# tests). Each parameter carries its engine's markers (see
+# ENGINE_CAPABILITIES in utils.py) so redis/postgres cases are deselected
+# from the unit job (`-m "not integration"`) and only run in the matching
+# integration job (`-m redis` / `-m postgres`), instead of relying on the
+# engine factory fixtures skipping on a connection failure that no longer
+# happens once fail_closed=False degrades gracefully instead of raising.
+STATE_CAPABLE_ENGINES = get_engine_params("get_state")
 
 
 class TestStateIntrospection:

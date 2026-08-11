@@ -10,6 +10,8 @@ from collections.abc import Callable, Awaitable
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Protocol
 
+import pytest
+
 if TYPE_CHECKING:
     from ratesync.core import RateLimiter
 
@@ -123,3 +125,24 @@ def get_engines_with(capability: str) -> list[str]:
 def get_unit_test_engines() -> list[str]:
     """Get engines that can run without infrastructure (for CI)."""
     return get_engines_with("no_infrastructure")
+
+
+def get_engine_params(capability: str) -> list[pytest.param]:
+    """Get `pytest.param` values for engines supporting a capability.
+
+    Like `get_engines_with()`, but each engine name is wrapped in a
+    `pytest.param` carrying that engine's `ENGINE_CAPABILITIES[...].markers`
+    (e.g. `redis`/`postgres`/`integration`). Use this instead of
+    `get_engines_with()` directly whenever a parametrized test is not
+    pre-filtered down to `get_unit_test_engines()`: it keeps
+    infrastructure-requiring engines out of the `unit` CI job
+    (`pytest -m "not integration"`) and routes them to the matching
+    integration job (`pytest -m redis` / `pytest -m postgres`) instead of
+    silently running them — degraded/fail-open, against no real backend —
+    wherever the test happens to be collected.
+    """
+    params = []
+    for name in get_engines_with(capability):
+        marks = [getattr(pytest.mark, marker) for marker in ENGINE_CAPABILITIES[name].markers]
+        params.append(pytest.param(name, marks=marks, id=name))
+    return params
