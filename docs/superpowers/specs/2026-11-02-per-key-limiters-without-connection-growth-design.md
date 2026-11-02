@@ -244,9 +244,21 @@ no release tag; publication is a separate owner decision (section 8).
 ## 8. Release
 
 - Python: `0.5.0` through the tag workflow in `RELEASING.md` (PyPI Trusted Publishing).
-- TypeScript: `package.json` and `CHANGELOG.md` prepared as `0.2.0`; not tagged or published here,
-  because the `rate-sync` name on npm is unclaimed and the repository has no CI publish workflow or
-  recorded npm owner. Left as an owner decision.
+- TypeScript: `0.2.1`, the first release on npm, published as `@rate-sync/rate-sync`. Decision (owner, 2026-11-02): publish it
+  professionally, from CI, from the company npm account (`turbo-notify-admin`). npm refused the unscoped name `rate-sync`
+  (403, "Package name too similar to existing package ratesync"), so the package is published in
+  a new npm organization `rate-sync` (matching the GitHub organization; owners `turbo-notify-admin`
+  and the project owner) as `@rate-sync/rate-sync`. The tag `v0.2.0` was pushed first and rejected
+  by npm before anything was released; it is left as is (published tags are not rewritten) and the
+  release is `v0.2.1`. The repository gets the same
+  convention as the other published packages of the owner: a tag-triggered workflow
+  (`.github/workflows/publish.yml`, tag `v0.2.0`) that tests against a real Redis, builds and runs
+  `npm publish --provenance --access public`, plus `RELEASING.md`. npm Trusted Publishing needs an
+  existing package, so the first publish uses a short-lived automation token held as the
+  repository secret `NPM_TOKEN`, deleted and revoked right after; later releases use Trusted
+  Publishing (OIDC) with no stored secret. Two Redis store tests that failed before this work are
+  fixed (an `IORedisStore` initialization guard, a test that raced the rate gate) and the Redis
+  suites now skip explicitly instead of passing silently when no server is reachable.
 
 ## 9. Traceability
 
