@@ -107,11 +107,51 @@ configure_limiter(
 
 ---
 
+### get_keyed_limiter
+
+The limiter for one caller-supplied value (user, client address, e-mail, tenant, token hash) under a configured limiter. **Use this for any per-caller limit.** Added in 0.5.0.
+
+The identifier is only a key: the limiter definition keeps one engine and so one connection pool, and the returned limiter shares it. The number of backend connections does not depend on the number of identifiers, and nothing is registered or cached per identifier on Redis and PostgreSQL. The memory engine keeps its state in the instance, so it keeps one instance per identifier in a bounded LRU (`MemoryRateLimiter.MAX_KEYED_LIMITERS`, 10,000 by default, least recently used dropped first).
+
+```python
+async def get_keyed_limiter(limiter_id: str, identifier: str) -> RateLimiter
+```
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `limiter_id` | `str` | A limiter from `rate-sync.toml` or `configure_limiter` |
+| `identifier` | `str` | Per-caller key. Any string |
+
+**Returns:** a ready-to-use limiter whose `group_id` is `"{limiter_id}:{identifier}"`, inheriting the definition's configuration. The Redis key is `"{key_prefix}:{limiter_id}:{identifier}:window"` (and `:rate`, `:concurrent` for the token bucket), the key a registered clone with that id used, so adopting it resets no window.
+
+**Raises:** `LimiterNotFoundError`, `UnsupportedLimiterEngineError` (the engine does not implement `RateLimiter.for_key`), `RateLimiterAcquisitionError` (backend down and `fail_closed=True`)
+
+Notes:
+
+- The returned object may be short-lived. Do not keep it as the identifier's state; call the function again. Its `get_metrics()` covers that object only, use `get_state()` for the backend's view.
+- `disconnect()` on it never closes the shared connection.
+- When the backend is down and `fail_closed=False`, the engine runs in the degraded fail-open mode and initialization is retried at most once per second, not once per request.
+- It does not look for a limiter that was registered explicitly as `"{limiter_id}:{identifier}"`. `get_or_clone_limiter` does.
+
+```python
+from ratesync import get_keyed_limiter
+
+limiter = await get_keyed_limiter("login", client_ip)
+if not await limiter.try_acquire(timeout=0):
+    raise TooManyRequests()
+```
+
+Custom engines opt in by overriding `RateLimiter.for_key(identifier)` (see [Contributing a New Engine](CONTRIBUTING_NEW_ENGINE.md)). The default raises `UnsupportedLimiterEngineError`.
+
+---
+
 ### clone_limiter
 
-Clone an existing limiter with optional overrides.
+Clone an existing limiter with optional overrides. The clone is registered under `new_id` for the life of the process and, on Redis and PostgreSQL, owns its own connection pool.
 
-> **Tip:** For per-user/tenant limiting, prefer using [template strings](#template-string-dynamic-per-usertenant) in the `@rate_limited` decorator: `@rate_limited("api:{user_id}")`. Use `clone_limiter` only when you need manual control.
+> **Warning:** Use it for a small, fixed set of named variants chosen by you (`payments` and `payments-premium`). Never call it with a value supplied by callers: every new value adds a limiter and a connection that are never released. For per-caller limits use [`get_keyed_limiter`](#get_keyed_limiter).
+
+> **Tip:** For per-user/tenant limiting, prefer using [template strings](#template-string-dynamic-per-usertenant) in the `@rate_limited` decorator: `@rate_limited("api:{user_id}")`.
 
 ```python
 def clone_limiter(
@@ -139,7 +179,9 @@ clone_limiter("api", "api:premium", rate_per_second=500.0)
 
 ### get_or_clone_limiter
 
-Get or create a cloned limiter for per-identifier rate limiting. Returns a limiter with ID `{base_limiter_id}:{unique_id}`. Creates a clone on first call, reuses on subsequent calls.
+Get the limiter for a per-identifier budget. Returns a limiter with `group_id` `{base_limiter_id}:{unique_id}`.
+
+Since 0.5.0 it no longer registers a limiter per identifier. For Redis, PostgreSQL and memory it is [`get_keyed_limiter`](#get_keyed_limiter) (one shared connection, nothing registered). A limiter registered explicitly as `{base_limiter_id}:{unique_id}` (configuration, or `clone_limiter` with overrides such as a premium tenant) is still returned as is. For a custom engine without `for_key` it falls back to the previous behavior (clone and register) and logs a warning once. Because nothing is registered, `get_limiter("api:user123")` no longer finds it; `check_limiter("api:user123")` and `acquire("api:user123")` still resolve it.
 
 > **Tip:** For most cases, prefer using [template strings](#template-string-dynamic-per-usertenant) in the `@rate_limited` decorator: `@rate_limited("api:{user_id}")`. Use `get_or_clone_limiter` only when you need direct access to the limiter instance.
 

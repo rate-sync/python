@@ -40,15 +40,15 @@ rate_per_second = 5000.0
 ## Basic Per-Tenant Limiting
 
 ```python
-from ratesync import clone_limiter, acquire
+from ratesync import get_keyed_limiter
 
 async def tenant_request(tenant_id: str):
-    # Each tenant gets their own rate limiter instance
-    clone_limiter("tenant_api", f"tenant:{tenant_id}")
-    await acquire(f"tenant:{tenant_id}")
+    # Each tenant gets its own budget; all tenants share one backend connection
+    limiter = await get_keyed_limiter("tenant_api", f"tenant:{tenant_id}")
+    await limiter.acquire()
 ```
 
-Each tenant's limiter is independent — Tenant A hitting their limit has zero impact on Tenant B.
+Each tenant's budget is independent: Tenant A hitting their limit has zero impact on Tenant B. The number of Redis connections stays the same whether you have ten tenants or ten million.
 
 ## FastAPI Integration
 

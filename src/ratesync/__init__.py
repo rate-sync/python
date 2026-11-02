@@ -75,12 +75,14 @@ from ratesync.exceptions import (
     StoreNotFoundError,
     ConfigValidationError,
     LimiterNotFoundError,
+    UnsupportedLimiterEngineError,
     RateLimiterAcquisitionError,
     RateLimiterAlreadyConfiguredError,
     RateLimiterError,
     RateLimiterNotConfiguredError,
     RateLimiterNotInitializedError,
 )
+from ratesync.keyed import get_keyed_limiter
 from ratesync.registry import (
     acquire,
     configure_store,
@@ -135,7 +137,7 @@ except ImportError:
     RedisRateLimiter = None
     _REDIS_AVAILABLE = False
 
-__version__ = "0.4.2"
+__version__ = "0.5.0"
 
 __all__ = [
     # Version
@@ -165,6 +167,7 @@ __all__ = [
     # Clone and check operations (for dynamic per-identifier limiting)
     "clone_limiter",
     "get_or_clone_limiter",
+    "get_keyed_limiter",
     "check_limiter",
     "check_multi_limiters",
     # Limiter operations
@@ -195,6 +198,7 @@ __all__ = [
     "ConfigValidationError",
     "StoreNotFoundError",
     "LimiterNotFoundError",
+    "UnsupportedLimiterEngineError",
 ]
 
 # Auto-load configuration from rate-sync.toml if it exists

@@ -11,7 +11,7 @@ from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
-from ratesync.exceptions import RateLimiterAcquisitionError
+from ratesync.exceptions import RateLimiterAcquisitionError, UnsupportedLimiterEngineError
 
 if TYPE_CHECKING:
     from ratesync.schemas import LimiterReadOnlyConfig, LimiterState
@@ -177,6 +177,33 @@ class RateLimiter(ABC):
             Some metrics may be implementation-specific
             (e.g., cas_failures may vary by backend).
         """
+
+    def for_key(self, identifier: str) -> "RateLimiter":
+        """Return a limiter for one key that shares this limiter's backend connection.
+
+        The returned limiter addresses the group ``"{self.group_id}:{identifier}"`` with the same
+        configuration (rate, limit, window, concurrency, timeout, ``fail_closed``). For engines
+        that use a connection pool (Redis, PostgreSQL) it shares this limiter's pool, so the
+        number of connections does not depend on the number of keys. Nothing is registered and
+        this call performs no I/O.
+
+        This is the engine-level building block of :func:`ratesync.get_keyed_limiter`, which also
+        takes care of initializing the engine. Prefer that function in application code.
+
+        The default implementation raises :class:`UnsupportedLimiterEngineError`, so engines
+        written against earlier versions keep working and opt in by overriding this method.
+
+        Args:
+            identifier: The per-key value (user id, client address, tenant, hash). Any string.
+
+        Returns:
+            A limiter for ``identifier``. Repeated calls may return different objects that address
+            the same key (pooled engines) or the same object (memory engine).
+
+        Raises:
+            UnsupportedLimiterEngineError: The engine has no per-key strategy.
+        """
+        raise UnsupportedLimiterEngineError(type(self).__name__)
 
     @property
     @abstractmethod

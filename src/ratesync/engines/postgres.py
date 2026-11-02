@@ -25,13 +25,14 @@ except ImportError:
     asyncpg_module = None  # type: ignore
 
 from ratesync.core import RateLimiter, RateLimiterMetrics
+from ratesync.engines.shared_backend import SharedBackendKeyMixin
 from ratesync.exceptions import RateLimiterAcquisitionError
 from ratesync.schemas import LimiterReadOnlyConfig, LimiterState, PostgresEngineConfig
 
 logger = logging.getLogger(__name__)
 
 
-class PostgresRateLimiter(RateLimiter):
+class PostgresRateLimiter(SharedBackendKeyMixin, RateLimiter):
     """PostgreSQL-based rate limiter with distributed coordination.
 
     Uses PostgreSQL tables to store rate limit state and coordinate across
@@ -197,6 +198,9 @@ class PostgresRateLimiter(RateLimiter):
         """Return fully qualified table name for sliding window timestamps."""
         return f"{self._schema_name}.{self._table_name}_window"
 
+    _BACKEND_ATTRS = ("_pool", "_owned_pool", "_initialized", "_degraded")
+    _STRIP_GROUP_ID = True
+
     async def initialize(self) -> None:
         """Initialize connection pool and optionally create table structure.
 
@@ -212,9 +216,16 @@ class PostgresRateLimiter(RateLimiter):
         get_state() return permissive (allow) results until a later
         initialize() call succeeds.
 
+        On a per-key view (see ``for_key``) it initializes the engine the view was made from and
+        shares its pool.
+
         Raises:
             RateLimiterAcquisitionError: If connection fails and fail_closed=True
         """
+        if self._root is not None:
+            await self._initialize_view()
+            return
+
         if self._initialized:
             return
 
@@ -978,7 +989,15 @@ class PostgresRateLimiter(RateLimiter):
             return True
 
     async def disconnect(self) -> None:
-        """Close connection pool if owned by this instance."""
+        """Close connection pool if owned by this instance.
+
+        On a per-key view this only detaches the view: the pool belongs to the engine the view
+        was made from and is shared with every other key.
+        """
+        if self._root is not None:
+            self._detach_view()
+            return
+
         if self._owned_pool is not None:
             try:
                 await self._owned_pool.close()

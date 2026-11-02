@@ -10,10 +10,11 @@ import logging
 from collections.abc import Awaitable, Callable
 from typing import TYPE_CHECKING
 
-from ratesync import clone_limiter, get_limiter
+from ratesync import get_limiter, get_or_clone_limiter
 from ratesync.contrib.fastapi.handlers import RateLimitExceededError
 from ratesync.contrib.fastapi.headers import RateLimitResult, set_rate_limit_headers
 from ratesync.contrib.fastapi.ip_utils import get_client_ip
+from ratesync.contrib.fastapi.remaining import remaining_after
 from ratesync.exceptions import LimiterNotFoundError, RateLimiterAcquisitionError
 
 if TYPE_CHECKING:
@@ -215,8 +216,9 @@ class RateLimitDependency:
     async def _check_limit(self, identifier: str) -> RateLimitResult:
         """Check the rate limit for the given identifier.
 
-        Uses ratesync's clone_limiter to create per-identifier limiters
-        dynamically from the base limiter configuration.
+        Uses ``get_or_clone_limiter``, which keys the base limiter by identifier on one shared
+        backend connection, so the number of connections does not grow with the number of
+        distinct clients.
 
         Args:
             identifier: Client identifier to check.
@@ -224,43 +226,22 @@ class RateLimitDependency:
         Returns:
             RateLimitResult with the check outcome.
         """
-        # Create dynamic limiter ID for this identifier
-        dynamic_id = f"{self.limiter_id}:{identifier}"
-
         try:
-            # Get or create the limiter for this identifier
             try:
-                limiter = get_limiter(dynamic_id)
+                limiter = await get_or_clone_limiter(self.limiter_id, identifier)
             except LimiterNotFoundError:
-                # Clone the base limiter for this identifier
-                try:
-                    clone_limiter(self.limiter_id, dynamic_id)
-                    limiter = get_limiter(dynamic_id)
-                except LimiterNotFoundError:
-                    logger.warning(
-                        "Rate limiter '%s' not configured. Check rate-sync.toml",
-                        self.limiter_id,
-                    )
-                    return self._unlimited_result()
-
-            # Initialize if needed
-            if not limiter.is_initialized:
-                await limiter.initialize()
+                logger.warning(
+                    "Rate limiter '%s' not configured. Check rate-sync.toml",
+                    self.limiter_id,
+                )
+                return self._unlimited_result()
 
             # Try to acquire slot (non-blocking)
             allowed = await limiter.try_acquire(timeout=self.timeout)
 
             # Get limit info from limiter
             limit, window = self._get_limiter_params(limiter)
-            metrics = limiter.get_metrics()
-
-            # Calculate remaining
-            if allowed:
-                remaining = max(
-                    0, limit - (metrics.total_acquisitions % limit) if limit > 0 else 999
-                )
-            else:
-                remaining = 0
+            remaining = await remaining_after(limiter, allowed, limit)
 
             return RateLimitResult(
                 allowed=allowed,
@@ -271,8 +252,7 @@ class RateLimitDependency:
 
         except RateLimiterAcquisitionError:
             # Rate limit exceeded
-            limiter = get_limiter(dynamic_id)
-            limit, window = self._get_limiter_params(limiter)
+            limit, window = self._get_limiter_params(get_limiter(self.limiter_id))
 
             return RateLimitResult(
                 allowed=False,

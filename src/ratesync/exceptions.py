@@ -133,3 +133,28 @@ class LimiterNotFoundError(RateLimiterError):
             f"Limiter '{limiter_id}' not found. "
             f"Configure it first using configure_limiter() or load_config()."
         )
+
+
+class UnsupportedLimiterEngineError(RateLimiterError, TypeError):
+    """Exception raised when an engine has no safe per-key strategy.
+
+    Raised by :func:`ratesync.get_keyed_limiter` and :meth:`RateLimiter.for_key` for an engine
+    that does not share one backend connection across keys (for example a third-party engine that
+    has not implemented ``for_key``). The library never falls back silently to creating one
+    backend connection per key, which is the failure this error exists to prevent.
+    """
+
+    def __init__(self, engine_name: str, limiter_id: str | None = None) -> None:
+        """Initialize the exception.
+
+        Args:
+            engine_name: Class name of the engine without a per-key strategy
+            limiter_id: Optional ID of the limiter that uses it
+        """
+        self.engine_name = engine_name
+        self.limiter_id = limiter_id
+        subject = f"limiter '{limiter_id}' uses {engine_name}" if limiter_id else engine_name
+        super().__init__(
+            f"{subject}, which has no per-key strategy that avoids one backend connection "
+            "per key. Implement RateLimiter.for_key() in the engine to opt in."
+        )

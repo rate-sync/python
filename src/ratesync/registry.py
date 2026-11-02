@@ -17,6 +17,7 @@ from ratesync.exceptions import (
     RateLimiterAcquisitionError,
     StoreNotFoundError,
 )
+from ratesync.keyed import get_keyed_limiter, supports_for_key
 from ratesync.schemas import MultiLimiterResult, RateLimitResult
 from ratesync.validation import validate_store_config
 
@@ -41,6 +42,9 @@ except ImportError:
     REDIS_ENGINE_AVAILABLE = False
 
 logger = logging.getLogger(__name__)
+
+# Base limiter ids already warned about the legacy per-identifier clone fallback
+_legacy_clone_warned: set[str] = set()
 
 # Strategy name to implementation class mapping
 ENGINE_CLASSES: dict[str, type[RateLimiter] | None] = {
@@ -405,6 +409,16 @@ class RateLimiterRegistry:
             LimiterNotFoundError: If limiter not configured
             StoreNotFoundError: If limiter's backend not found
         """
+        if limiter_id not in self._limiters and ":" in limiter_id:
+            # "base:identifier" for a base limiter that supports per-key views: the same limiter
+            # get_or_clone_limiter returns, without registering it (it is what makes
+            # check_limiter("api:alice") keep working after get_or_clone_limiter("api", "alice")).
+            base_id, identifier = limiter_id.split(":", 1)
+            if base_id in self._limiters and supports_for_key(
+                self._get_or_create_limiter_sync(base_id)
+            ):
+                return await get_keyed_limiter(base_id, identifier)
+
         limiter = self._get_or_create_limiter_sync(limiter_id)
 
         # Lazy initialization: initialize on first use if not yet initialized
@@ -701,6 +715,13 @@ def clone_limiter(
     Creates a new limiter with the same configuration as an existing one,
     optionally overriding parameters. Works with both token_bucket and sliding_window.
 
+    The clone is registered under ``new_id`` for the life of the process and, on a pooled engine
+    (Redis, PostgreSQL), owns its own connection pool. Use it for a small, fixed set of named
+    variants chosen by the developer (``payments`` and ``payments-premium``). Never call it with a
+    value supplied by callers (a user id, a client address, an e-mail): every new value would add
+    a limiter and a connection that are never released. For per-caller limits use
+    :func:`ratesync.get_keyed_limiter`, which keeps the connection count constant.
+
     Args:
         source_id: ID of limiter to clone from
         new_id: ID for new limiter
@@ -793,19 +814,27 @@ async def get_or_clone_limiter(
     base_limiter_id: str,
     unique_id: str,
 ) -> RateLimiter:
-    """Get or create a cloned limiter for a unique identifier.
+    """Get the limiter for a unique identifier, derived from a base limiter.
 
-    Creates a clone of a base limiter configuration for per-identifier rate limiting.
-    The clone inherits all settings from the base limiter but operates independently.
+    Inherits all settings from the base limiter and keeps its own independent budget per
+    identifier. This is useful for rate limiting per-user, per-IP, per-email, etc.
 
-    This is useful for rate limiting per-user, per-IP, per-email, etc.
+    Since 0.5.0 this no longer registers a limiter per identifier. For the engines that support
+    it (Redis, PostgreSQL, memory) it is :func:`ratesync.get_keyed_limiter`: the identifier is
+    only a key on the base limiter's single connection pool, so the number of backend connections
+    does not grow with the number of distinct identifiers. The Redis key is unchanged. The
+    returned object may be short-lived and its metrics cover only that object. A limiter that was
+    registered explicitly as ``"{base_limiter_id}:{unique_id}"`` (configuration or
+    :func:`clone_limiter` with overrides) is still honored and returned as is. An engine without a
+    per-key strategy (a third-party engine) falls back to cloning and registering, as in 0.4, and
+    a warning is logged once per limiter.
 
     Args:
         base_limiter_id: ID of the template limiter from rate-sync.toml
         unique_id: Identifier to append (IP, user_id, email_hash, etc.)
 
     Returns:
-        Initialized RateLimiter with ID: "{base_limiter_id}:{unique_id}"
+        Initialized RateLimiter with group_id: "{base_limiter_id}:{unique_id}"
 
     Raises:
         LimiterNotFoundError: If base_limiter_id doesn't exist
@@ -822,17 +851,31 @@ async def get_or_clone_limiter(
     # Create composite limiter ID
     dynamic_id = f"{base_limiter_id}:{unique_id}"
 
-    try:
+    # An explicitly registered limiter wins (per-identifier overrides, such as a premium tenant).
+    if _registry.has_limiter(dynamic_id):
         limiter = _registry.get_limiter(dynamic_id)
-    except LimiterNotFoundError:
-        # Clone base limiter for this identifier
-        clone_limiter(base_limiter_id, dynamic_id)
-        limiter = _registry.get_limiter(dynamic_id)
+        if not limiter.is_initialized:
+            await limiter.initialize()
+        return limiter
 
-    # Initialize if needed
+    base = _registry.get_limiter(base_limiter_id)  # raises LimiterNotFoundError
+    if supports_for_key(base):
+        return await get_keyed_limiter(base_limiter_id, unique_id)
+
+    # Engine without a per-key strategy: legacy behavior, one registered limiter per identifier.
+    if base_limiter_id not in _legacy_clone_warned:
+        _legacy_clone_warned.add(base_limiter_id)
+        logger.warning(
+            "Limiter '%s' uses %s, which has no per-key strategy: get_or_clone_limiter registers "
+            "one limiter (and one backend connection) per identifier. Implement "
+            "RateLimiter.for_key() in the engine.",
+            base_limiter_id,
+            type(base).__name__,
+        )
+    clone_limiter(base_limiter_id, dynamic_id)
+    limiter = _registry.get_limiter(dynamic_id)
     if not limiter.is_initialized:
         await limiter.initialize()
-
     return limiter
 
 

@@ -11,7 +11,7 @@ Note: This does NOT coordinate across multiple processes or containers.
 
 import asyncio
 import time
-from collections import deque
+from collections import OrderedDict, deque
 from typing import Callable
 
 from ratesync.core import RateLimiter, RateLimiterMetrics
@@ -67,6 +67,12 @@ class MemoryRateLimiter(RateLimiter):
         _initialized: Whether the limiter has been initialized
         _metrics: Observability metrics
     """
+
+    #: Per-key limiters (see ``for_key``) kept per engine. The state of a key lives in its own
+    #: instance, so the cache is the memory of the limit; the bound keeps a flood of distinct keys
+    #: from growing it without end. The least recently used key is dropped first and starts a
+    #: fresh window if it comes back, which is acceptable for an engine that is single-process.
+    MAX_KEYED_LIMITERS: int = 10_000
 
     def __init__(
         self,
@@ -157,6 +163,7 @@ class MemoryRateLimiter(RateLimiter):
 
         self._initialized = False
         self._metrics = RateLimiterMetrics()
+        self._keyed: OrderedDict[str, MemoryRateLimiter] = OrderedDict()
 
     @classmethod
     def from_config(
@@ -200,6 +207,34 @@ class MemoryRateLimiter(RateLimiter):
         This is idempotent and can be called multiple times.
         """
         self._initialized = True
+
+    def for_key(self, identifier: str) -> "MemoryRateLimiter":
+        """Return the independent limiter for one key (see ``RateLimiter.for_key``).
+
+        The state of a memory limiter lives in the instance, so unlike the pooled engines each key
+        gets its own instance. Instances are cached per engine, up to ``MAX_KEYED_LIMITERS``, least
+        recently used dropped first. Repeated calls with the same key return the same object while
+        it is cached. No connection exists, so nothing here can leak one.
+        """
+        held = self._keyed.get(identifier)
+        if held is not None:
+            self._keyed.move_to_end(identifier)
+            return held
+
+        clone = type(self)(
+            group_id=f"{self._group_id}:{identifier}",
+            rate_per_second=self._rate_per_second,
+            limit=self._limit,
+            window_seconds=self._window_seconds,
+            max_concurrent=self._max_concurrent,
+            default_timeout=self._default_timeout,
+            fail_closed=self._fail_closed,
+        )
+        clone._initialized = True  # the memory engine's initialize() is only this flag
+        self._keyed[identifier] = clone
+        while len(self._keyed) > self.MAX_KEYED_LIMITERS:
+            self._keyed.popitem(last=False)
+        return clone
 
     async def _acquire_rate_slot(self) -> float:
         """Acquire rate limiting slot (throughput control).
@@ -635,7 +670,8 @@ class MemoryRateLimiter(RateLimiter):
     async def reset(self) -> None:
         """Reset this limiter's state (for testing).
 
-        Clears all timestamps and resets the semaphore to initial state.
+        Clears all timestamps and resets the semaphore to initial state, including the per-key
+        limiters created with ``for_key``.
         This allows tests to run with fresh limiter state.
 
         Example:
@@ -644,6 +680,10 @@ class MemoryRateLimiter(RateLimiter):
             >>> await limiter.acquire()
             >>> await limiter.reset()  # Fresh state
         """
+        # Per-key limiters (see for_key) are part of this limiter's family.
+        for keyed in list(self._keyed.values()):
+            await keyed.reset()
+
         async with self._lock:
             self._timestamps.clear()
 

@@ -16,7 +16,7 @@ from ratesync.exceptions import (
     LimiterNotFoundError,
     RateLimiterAcquisitionError,
 )
-from ratesync.registry import clone_limiter, get_limiter
+from ratesync.registry import get_limiter, get_or_clone_limiter
 
 logger = logging.getLogger(__name__)
 
@@ -112,7 +112,9 @@ def rate_limited(
                 # Check if it's a template string (contains {placeholder})
                 if _TEMPLATE_PATTERN.search(limiter_or_factory):
                     # Mode 2: Template string - resolve placeholders from function args
-                    limiter = _resolve_template_limiter(limiter_or_factory, func, args, kwargs)
+                    limiter = await _resolve_template_limiter(
+                        limiter_or_factory, func, args, kwargs
+                    )
                 else:
                     # Mode 1: Fixed limiter_id in registry
                     try:
@@ -213,18 +215,20 @@ def _call_factory(
     return factory(**filtered_kwargs)
 
 
-def _resolve_template_limiter(
+async def _resolve_template_limiter(
     template: str,
     func: Callable[..., Any],
     args: tuple[Any, ...],
     kwargs: dict[str, Any],
 ) -> RateLimiter:
-    """Resolve a template string to a limiter, cloning if necessary.
+    """Resolve a template string to a limiter derived from the base limiter.
 
     Template format: "base_limiter:{placeholder1}:{placeholder2}"
     - The base limiter ID is extracted from the part before the first ":"
     - Placeholders are resolved using the decorated function's arguments
-    - If the resolved limiter doesn't exist, it's cloned from the base limiter
+    - Unless a limiter with the resolved ID was registered explicitly, the limiter is derived from
+      the base limiter with ``get_or_clone_limiter``: the resolved suffix is only a key on the base
+      limiter's connection, nothing is registered per value
 
     Args:
         template: Template string like "api:{user_id}" or "api:{tenant}:{user}"
@@ -262,22 +266,15 @@ def _resolve_template_limiter(
     # Extract base limiter ID (part before the first ":")
     base_limiter_id = template.split(":")[0]
 
-    # Try to get existing limiter, or clone from base
+    # The suffix after "base:" is the key. Without the base prefix there is nothing to derive from.
+    prefix = f"{base_limiter_id}:"
     try:
+        if resolved_id.startswith(prefix):
+            return await get_or_clone_limiter(base_limiter_id, resolved_id[len(prefix) :])
         return get_limiter(resolved_id)
     except LimiterNotFoundError:
-        # Clone from base limiter
-        try:
-            clone_limiter(base_limiter_id, resolved_id)
-            logger.debug(
-                "Cloned limiter '%s' from base '%s'",
-                resolved_id,
-                base_limiter_id,
-            )
-            return get_limiter(resolved_id)
-        except LimiterNotFoundError:
-            # Base limiter doesn't exist
-            raise LimiterNotFoundError(
-                f"Base limiter '{base_limiter_id}' not found. "
-                f"Template '{template}' requires '{base_limiter_id}' to be configured."
-            ) from None
+        # Base limiter doesn't exist
+        raise LimiterNotFoundError(
+            f"Base limiter '{base_limiter_id}' not found. "
+            f"Template '{template}' requires '{base_limiter_id}' to be configured."
+        ) from None

@@ -127,12 +127,17 @@ redis-cli --scan --pattern "rate_limit:*"
 redis-cli GET rate_limit:api
 ```
 
+## Connections and per-caller limits
+
+Each limiter definition owns one connection pool (`pool_max_size`). Limits applied per caller (user, client address, tenant) must use `get_keyed_limiter` or `get_or_clone_limiter`: the identifier is only part of the Redis key (`{key_prefix}:{limiter_id}:{identifier}:window`), so the number of connections does not grow with the number of distinct callers. Registering one limiter per caller with `clone_limiter` gives each its own pool and exhausts file descriptors on a long-running service exposed to anonymous traffic.
+
 ## Troubleshooting
 
 | Issue | Cause | Solution |
 |-------|-------|----------|
 | `ConnectionError` | Redis unreachable | Check host/port, network, Redis status |
 | Connection pool exhausted | Too many concurrent operations | Increase `pool_max_size` |
+| Open file descriptors or Redis connections keep growing | A limiter is registered per caller (`clone_limiter` with caller values, rate-sync before 0.5.0 with `get_or_clone_limiter`) | Use `get_keyed_limiter`; upgrade to 0.5.0 |
 | Rate limiting too strict | Configuration issue | Verify `rate_per_second` value |
 | Keys never expire | Clock sync or margin issue | Check `timing_margin_ms`, verify server time |
 | High latency | Network distance | Place Redis close to application |

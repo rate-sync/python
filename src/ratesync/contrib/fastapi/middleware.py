@@ -11,10 +11,11 @@ import re
 from collections.abc import Callable
 from typing import TYPE_CHECKING
 
-from ratesync import clone_limiter, get_limiter
+from ratesync import get_limiter, get_or_clone_limiter
 from ratesync.contrib.fastapi.handlers import create_rate_limit_response
 from ratesync.contrib.fastapi.headers import RateLimitResult, get_rate_limit_headers
 from ratesync.contrib.fastapi.ip_utils import get_client_ip
+from ratesync.contrib.fastapi.remaining import remaining_after
 from ratesync.exceptions import LimiterNotFoundError, RateLimiterAcquisitionError
 
 if TYPE_CHECKING:
@@ -226,36 +227,20 @@ class RateLimitMiddleware:
         Returns:
             RateLimitResult with check outcome.
         """
-        dynamic_id = f"{self.limiter_id}:{identifier}"
-
         try:
             try:
-                limiter = get_limiter(dynamic_id)
+                limiter = await get_or_clone_limiter(self.limiter_id, identifier)
             except LimiterNotFoundError:
-                try:
-                    clone_limiter(self.limiter_id, dynamic_id)
-                    limiter = get_limiter(dynamic_id)
-                except LimiterNotFoundError:
-                    logger.warning(
-                        "Rate limiter '%s' not configured. Check rate-sync.toml",
-                        self.limiter_id,
-                    )
-                    return self._unlimited_result()
-
-            if not limiter.is_initialized:
-                await limiter.initialize()
+                logger.warning(
+                    "Rate limiter '%s' not configured. Check rate-sync.toml",
+                    self.limiter_id,
+                )
+                return self._unlimited_result()
 
             allowed = await limiter.try_acquire(timeout=0)
 
             limit, window = self._get_limiter_params(limiter)
-            metrics = limiter.get_metrics()
-
-            if allowed:
-                remaining = max(
-                    0, limit - (metrics.total_acquisitions % limit) if limit > 0 else 999
-                )
-            else:
-                remaining = 0
+            remaining = await remaining_after(limiter, allowed, limit)
 
             return RateLimitResult(
                 allowed=allowed,
@@ -265,8 +250,7 @@ class RateLimitMiddleware:
             )
 
         except RateLimiterAcquisitionError:
-            limiter = get_limiter(dynamic_id)
-            limit, window = self._get_limiter_params(limiter)
+            limit, window = self._get_limiter_params(get_limiter(self.limiter_id))
             return RateLimitResult(
                 allowed=False,
                 limit=limit,

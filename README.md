@@ -33,7 +33,7 @@ window_seconds = 300     # per 5 minutes
 
 ### Different API quotas for free, pro, and enterprise customers
 
-Your free tier gets 100 requests/hour. Pro gets 1,000. Enterprise gets 10,000. Define each tier as a limiter and clone it per user — rate-sync handles the rest.
+Your free tier gets 100 requests/hour. Pro gets 1,000. Enterprise gets 10,000. Define each tier as a limiter and key it per user. rate-sync handles the rest.
 
 ```python
 limiter = await get_or_clone_limiter(f"api_{tier}", api_key)
@@ -46,9 +46,9 @@ limiter = await get_or_clone_limiter(f"api_{tier}", api_key)
 In multi-tenant systems, a single noisy tenant can starve everyone else. Per-tenant rate limiting enforces fair usage — each tenant gets their share, and no one can monopolize your infrastructure.
 
 ```python
-# Each tenant gets their own enforced limit
-clone_limiter("platform_api", f"tenant:{tenant_id}")
-await acquire(f"tenant:{tenant_id}")
+# Each tenant gets their own enforced limit, on one shared connection
+limiter = await get_keyed_limiter("platform_api", tenant_id)
+await limiter.acquire()
 ```
 
 > **Deep dive:** [Multi-Tenant Fairness](https://github.com/rate-sync/python/blob/main/docs/patterns/multi-tenant-fairness.md)
@@ -197,15 +197,17 @@ async def multi_tenant_api(tenant_id: str, user_id: str):
 
 ### Per-User Limits (Manual)
 
-For advanced cases where you need direct limiter control:
+For advanced cases where you need direct limiter control, use `get_keyed_limiter`. The identifier is only a key on the limiter's single connection, so the number of Redis or PostgreSQL connections does not grow with the number of users, client addresses or tenants:
 
 ```python
-from ratesync import get_or_clone_limiter
+from ratesync import get_keyed_limiter
 
-limiter = await get_or_clone_limiter("api", user_id)
+limiter = await get_keyed_limiter("api", user_id)
 async with limiter.acquire_context():
     response = await client.get(url)
 ```
+
+`get_or_clone_limiter("api", user_id)` returns the same thing for the supported engines. Do not call `clone_limiter` with a value your callers control: it registers a limiter, and on Redis or PostgreSQL a connection pool, per value, for the life of the process. Keep `clone_limiter` for a small fixed set of named variants (`api` and `api-premium`).
 
 ## Backends
 

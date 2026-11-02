@@ -160,6 +160,12 @@ class YourRateLimiter(RateLimiter):
         )
 ```
 
+### Optional: per-key limiters (`for_key`)
+
+An engine that keeps a connection pool (or any expensive resource) per instance should also implement `RateLimiter.for_key(identifier)`, which returns a limiter for `"{group_id}:{identifier}"` that **shares** that resource. `ratesync.get_keyed_limiter` and `get_or_clone_limiter` use it, so per-caller limits do not open one connection per caller. Without it the base class raises `UnsupportedLimiterEngineError` and `get_or_clone_limiter` falls back to registering one limiter per identifier (and logs a warning).
+
+Engines that derive their storage key from `group_id` and own one pool can reuse `ratesync.engines.shared_backend.SharedBackendKeyMixin` (declare `_BACKEND_ATTRS`, and call `_initialize_view()` / `_detach_view()` from `initialize()` / `disconnect()` when `self._root is not None`). Engines that keep their state in the instance (like the memory engine) keep a bounded cache of per-key instances instead. A view must never close the shared resource in `disconnect()`.
+
 ## Step 2: Add Test Fixtures
 
 In `tests/compliance/conftest.py`:

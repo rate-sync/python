@@ -26,6 +26,7 @@ except ImportError:
     ConnectionPool = None  # type: ignore
 
 from ratesync.core import RateLimiter, RateLimiterMetrics
+from ratesync.engines.shared_backend import SharedBackendKeyMixin
 from ratesync.exceptions import RateLimiterAcquisitionError
 from ratesync.schemas import LimiterReadOnlyConfig, LimiterState, RedisEngineConfig
 
@@ -70,7 +71,7 @@ return {1, remaining, window}
 """
 
 
-class RedisSlidingWindowRateLimiter(RateLimiter):
+class RedisSlidingWindowRateLimiter(SharedBackendKeyMixin, RateLimiter):
     """Redis-based rate limiter using sliding window counter algorithm.
 
     Counts requests in a sliding time window and blocks when limit is reached.
@@ -164,13 +165,23 @@ class RedisSlidingWindowRateLimiter(RateLimiter):
         self._metrics = RateLimiterMetrics()
         self._script = None
 
+    _BACKEND_ATTRS = ("_pool", "_client", "_script", "_initialized")
+
     @property
     def _key(self) -> str:
         """Return Redis key for this limiter."""
         return f"{self._key_prefix}:{self._group_id}:window"
 
     async def initialize(self) -> None:
-        """Initialize Redis connection and register Lua script."""
+        """Initialize Redis connection and register Lua script.
+
+        On a per-key view (see ``for_key``) it initializes the engine the view was made from and
+        shares its pool.
+        """
+        if self._root is not None:
+            await self._initialize_view()
+            return
+
         if self._initialized:
             return
 
@@ -320,7 +331,15 @@ class RedisSlidingWindowRateLimiter(RateLimiter):
         """No-op for sliding window (no concurrency tracking)."""
 
     async def disconnect(self) -> None:
-        """Close Redis connection pool."""
+        """Close Redis connection pool.
+
+        On a per-key view this only detaches the view: the pool belongs to the engine the view
+        was made from and is shared with every other key.
+        """
+        if self._root is not None:
+            self._detach_view()
+            return
+
         if self._client is not None:
             try:
                 await self._client.aclose()

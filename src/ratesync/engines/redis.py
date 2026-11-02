@@ -28,6 +28,7 @@ except ImportError:
     redis_exceptions = None  # type: ignore
 
 from ratesync.core import RateLimiter, RateLimiterMetrics
+from ratesync.engines.shared_backend import SharedBackendKeyMixin
 from ratesync.exceptions import RateLimiterAcquisitionError
 from ratesync.schemas import RedisEngineConfig, LimiterReadOnlyConfig, LimiterState
 
@@ -158,7 +159,7 @@ return 0
 """
 
 
-class RedisRateLimiter(RateLimiter):
+class RedisRateLimiter(SharedBackendKeyMixin, RateLimiter):
     """Redis-based rate limiter with distributed coordination.
 
     Uses Redis with Lua scripts to implement atomic rate limiting and
@@ -329,6 +330,17 @@ class RedisRateLimiter(RateLimiter):
         self._sliding_window_script = None
         self._release_script = None
 
+    _BACKEND_ATTRS = (
+        "_pool",
+        "_client",
+        "_acquire_script",
+        "_sliding_window_script",
+        "_release_script",
+        "_initialized",
+        "_degraded",
+    )
+    _STRIP_GROUP_ID = True
+
     @property
     def _rate_key(self) -> str:
         """Return Redis key for rate limiting (token bucket)."""
@@ -347,7 +359,8 @@ class RedisRateLimiter(RateLimiter):
     async def initialize(self) -> None:
         """Initialize Redis connection pool and register Lua scripts.
 
-        This operation is idempotent - can be called multiple times.
+        This operation is idempotent - can be called multiple times. On a per-key view (see
+        ``for_key``) it initializes the engine the view was made from and shares its pool.
 
         Honors fail_closed on backend failure: if fail_closed=True, raises
         RateLimiterAcquisitionError. If fail_closed=False (default), logs a
@@ -359,6 +372,10 @@ class RedisRateLimiter(RateLimiter):
         Raises:
             RateLimiterAcquisitionError: If connection fails and fail_closed=True
         """
+        if self._root is not None:
+            await self._initialize_view()
+            return
+
         if self._initialized:
             return
 
@@ -895,7 +912,15 @@ class RedisRateLimiter(RateLimiter):
             return True
 
     async def disconnect(self) -> None:
-        """Close Redis connection pool."""
+        """Close Redis connection pool.
+
+        On a per-key view this only detaches the view: the pool belongs to the engine the view
+        was made from and is shared with every other key.
+        """
+        if self._root is not None:
+            self._detach_view()
+            return
+
         if self._client is not None:
             try:
                 await self._client.aclose()
