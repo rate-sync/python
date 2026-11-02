@@ -5,6 +5,55 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.0] - 2026-11-02
+
+### Added
+- `get_keyed_limiter(limiter_id, identifier)`: the limiter for one caller-supplied value (user,
+  client address, e-mail, tenant, token hash) that costs **no backend connection per identifier**.
+  The limiter definition keeps a single engine and connection pool; the identifier is only a key
+  that shares it. The group, and so the Redis key (`{key_prefix}:{limiter_id}:{identifier}:window`,
+  `:rate`, `:concurrent`) and the PostgreSQL row, are exactly what a registered clone named
+  `"{limiter_id}:{identifier}"` used, so adopting it resets no window and orphans no data.
+- `RateLimiter.for_key(identifier)`, the engine-level capability behind it. Implemented by the
+  Redis token bucket, Redis sliding window and PostgreSQL engines (a view that shares the pool,
+  with its own metrics; its `disconnect()` never closes the shared pool) and by the memory engine
+  (a bounded LRU of per-key instances, `MemoryRateLimiter.MAX_KEYED_LIMITERS`, default 10,000).
+  The default on the base class raises `UnsupportedLimiterEngineError`, so existing third-party
+  engines keep working and opt in by overriding it.
+- `UnsupportedLimiterEngineError` (a `RateLimiterError` and a `TypeError`): an engine with no
+  per-key strategy fails loudly instead of silently opening one connection per key.
+- Initialization of the shared engine is single-flight (concurrent first calls open one pool). When
+  the backend is down it is retried at most once per second instead of once per request, and a
+  `fail_closed` limiter keeps raising `RateLimiterAcquisitionError`.
+
+### Fixed
+- Open Redis and PostgreSQL connections, and the registry itself, grew without bound with the
+  number of distinct identifiers passed to `get_or_clone_limiter`, `@rate_limited("api:{user_id}")`,
+  `RateLimitDependency`, `RateLimitMiddleware` and `CompositeRateLimiter.check`: each new identifier
+  registered a limiter that owned its own connection pool and nothing ever closed it. With
+  caller-controlled identifiers (client addresses, hashes of unvalidated tokens) a long-running
+  service ran out of file descriptors. They now go through `get_keyed_limiter`: one connection pool
+  per limiter definition regardless of the number of identifiers.
+
+### Changed
+- `get_or_clone_limiter(base_id, unique_id)` keeps its signature and return type but no longer
+  registers a limiter per identifier for the Redis, PostgreSQL and memory engines. It still
+  returns a limiter registered explicitly as `"{base_id}:{unique_id}"` (configuration, or
+  `clone_limiter` with overrides). For an engine without `for_key` it falls back to the previous
+  behavior and logs a warning once. Observable differences: after the call the dynamic id is no
+  longer returned by `get_limiter()`, `has_limiter()` or `list_limiters()` (`check_limiter("api:x")`
+  and `acquire("api:x")` still resolve it); on Redis and PostgreSQL the returned object can be
+  short-lived and its `get_metrics()` covers that object only; on the memory engine a key evicted
+  from the LRU starts a fresh window.
+- `clone_limiter` keeps registering (it creates a named variant, with overrides). Its documentation
+  now says to use it for a small fixed set of variants and never with caller-supplied values.
+- `X-RateLimit-Remaining` from `RateLimitDependency` and `RateLimitMiddleware` is read from the
+  limiter state for sliding windows (it was a process-local counter on the limiter object).
+- `MemoryRateLimiter.reset()` also resets the per-key limiters created with `for_key`
+  (`reset_all_limiters()` keeps resetting limiters obtained through `get_or_clone_limiter`).
+  On Redis and PostgreSQL it resets the definition only; use `reset_backend_store()` to clear
+  per-identifier data in tests.
+
 ## [0.4.2] - 2026-08-11
 
 ### Fixed
