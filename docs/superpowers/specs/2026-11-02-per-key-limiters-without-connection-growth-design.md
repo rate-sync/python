@@ -266,3 +266,21 @@ Consumer incident record and workaround: the consuming application's connection-
 same date. Library files touched: `core.py`, `exceptions.py`, `keyed.py` (new), `registry.py`,
 `engines/{redis,redis_sliding_window,postgres,memory}.py`, `decorators.py`,
 `composite.py`, `contrib/fastapi/{dependencies,middleware}.py`, `__init__.py`, docs.
+
+## 10. TypeScript follow-up: concurrency-only limiters (0.2.3)
+
+Found while publishing: the TypeScript stores treated a missing `ratePerSecond` as 1 request per
+second (`ratePerSecond ?? 1`), while the Python engines treat it as unlimited. No document, spec
+or test gave a reason for the default; `docs/configuration.md` states "At least one of
+`ratePerSecond` or `maxConcurrent` required", which makes a concurrency-only limiter a valid
+configuration whose only limit is `maxConcurrent`. Decision: align TypeScript with Python. A
+missing, zero or negative `ratePerSecond` means no rate gate (`intervalSeconds()` in
+`engines/base.ts`, interval `0`, which the Redis script already treats as disabled). Also fixed in
+the same release, because the first change exposes them: the memory store ignored `maxConcurrent`
+and `release()` (the TS port spec scheduled engine-level concurrency as P1), so it now enforces it
+for both algorithms like the Redis stores; and `RateLimiter.checkLimit()` leaked one concurrency
+slot per call on Redis (nothing released it), so it now releases the slot right away. Tests: the
+store compliance suite runs against memory, node-redis and ioredis (Redis ones skip without a
+server): burst up to `maxConcurrent`, refusal beyond it with `waitMs` 0, release, per-key slots,
+explicit `ratePerSecond` still limiting, sliding window plus `maxConcurrent`, `getState` free
+slots; plus `RateLimiter`-level tests and a Redis `checkLimit` leak regression.
