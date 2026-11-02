@@ -71,6 +71,7 @@ configure_limiter("dynamic", store_id="prod", rate_per_second=50.0)  # Override/
 | Option | Type | Default | Description |
 |--------|------|---------|-------------|
 | `engine` | `str` | Required | `"memory"` |
+| `max_keyed_limiters` | `int` | `10000` | Cap on per-key limiters one limiter holds for `get_keyed_limiter` / `get_or_clone_limiter`. Entries with live state are never dropped; at the cap, new keys share one overflow budget |
 
 ```toml
 [stores.dev]

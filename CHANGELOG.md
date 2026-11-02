@@ -17,7 +17,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `RateLimiter.for_key(identifier)`, the engine-level capability behind it. Implemented by the
   Redis token bucket, Redis sliding window and PostgreSQL engines (a view that shares the pool,
   with its own metrics; its `disconnect()` never closes the shared pool) and by the memory engine
-  (a bounded LRU of per-key instances, `MemoryRateLimiter.MAX_KEYED_LIMITERS`, default 10,000).
+  (a bounded cache of per-key instances, see the next item).
+- The memory engine's per-key cache never drops live state. A plain LRU would let a limited caller
+  refresh its own budget by minting `cap` distinct keys, so: the cap is `max_keyed_limiters`
+  (default 10,000, a `MemoryRateLimiter` argument and a memory store setting); at the cap, only
+  entries with no live state (window expired, token interval elapsed, no held concurrency slot) are
+  reclaimed, scanned at most once per second (`MemoryRateLimiter.is_idle`); when nothing is
+  reclaimable, keys that are not cached share one overflow limiter with the base configuration
+  (`group_id` `"{group_id}:*overflow*"`), so a flood of keys can neither raise the budget nor touch
+  an older key.
   The default on the base class raises `UnsupportedLimiterEngineError`, so existing third-party
   engines keep working and opt in by overriding it.
 - `UnsupportedLimiterEngineError` (a `RateLimiterError` and a `TypeError`): an engine with no
@@ -43,8 +51,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   behavior and logs a warning once. Observable differences: after the call the dynamic id is no
   longer returned by `get_limiter()`, `has_limiter()` or `list_limiters()` (`check_limiter("api:x")`
   and `acquire("api:x")` still resolve it); on Redis and PostgreSQL the returned object can be
-  short-lived and its `get_metrics()` covers that object only; on the memory engine a key evicted
-  from the LRU starts a fresh window.
+  short-lived and its `get_metrics()` covers that object only; on the memory engine, at the cap with
+  every entry live, new keys share one overflow budget.
 - `clone_limiter` keeps registering (it creates a named variant, with overrides). Its documentation
   now says to use it for a small fixed set of variants and never with caller-supplied values.
 - `X-RateLimit-Remaining` from `RateLimitDependency` and `RateLimitMiddleware` is read from the

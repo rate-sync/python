@@ -270,21 +270,8 @@ class TestMemoryEngine:
         assert first.group_id == "login:a"
         assert first.is_initialized
 
-    async def test_lru_is_bounded_and_evicts_the_oldest(self):
-        base = get_limiter("login")
-        with patch.object(MemoryRateLimiter, "MAX_KEYED_LIMITERS", 3):
-            first = await get_keyed_limiter("login", "0")
-            for i in range(1, 4):
-                await get_keyed_limiter("login", str(i))
-            assert len(base._keyed) == 3
-
-            # "0" was evicted: a new instance with a fresh window
-            assert await get_keyed_limiter("login", "0") is not first
-
-            # recently used entries survive
-            kept = await get_keyed_limiter("login", "3")
-            await get_keyed_limiter("login", "4")
-            assert await get_keyed_limiter("login", "3") is kept
+    async def test_clone_inherits_configuration_marker(self):
+        assert (await get_keyed_limiter("login", "z")).group_id == "login:z"
 
     async def test_clone_inherits_configuration(self):
         limiter = await get_keyed_limiter("login", "a")
@@ -658,3 +645,122 @@ class TestMemoryRemainingFromTheBackend:
         remaining = [(await dependency._check_limit("a")).remaining for _ in range(4)]
 
         assert remaining == [2, 1, 0, 0]
+
+
+# =============================================================================
+# The memory engine's key cache never resets live state (no bypass by eviction)
+# =============================================================================
+
+
+class TestMemoryKeyCacheNeverForgetsLiveState:
+    """Minting many keys must not refresh the budget of an old key (spec D2a)."""
+
+    def _engine(self, **kwargs) -> MemoryRateLimiter:
+        kwargs.setdefault("limit", 2)
+        kwargs.setdefault("window_seconds", 60)
+        kwargs.setdefault("max_keyed_limiters", 5)
+        engine = MemoryRateLimiter("login", **kwargs)
+        engine.KEYED_RECLAIM_INTERVAL_S = 0.0
+        return engine
+
+    async def test_a_key_at_its_limit_stays_limited_after_the_cap_is_flooded(self):
+        engine = self._engine()
+        victim = engine.for_key("attacker")
+        assert await victim.try_acquire(timeout=0) is True
+        assert await victim.try_acquire(timeout=0) is True
+        assert await victim.try_acquire(timeout=0) is False
+
+        for i in range(1000):  # far more than the cap, every key holding live state
+            await engine.for_key(f"other-{i}").try_acquire(timeout=0)
+
+        again = engine.for_key("attacker")
+        assert again is victim
+        assert await again.try_acquire(timeout=0) is False
+
+    async def test_the_cache_never_exceeds_the_cap(self):
+        engine = self._engine()
+        for i in range(1000):
+            await engine.for_key(f"k-{i}").try_acquire(timeout=0)
+
+        assert len(engine._keyed) <= 5
+
+    async def test_overflow_keys_share_one_budget(self):
+        engine = self._engine(limit=2)
+        for i in range(5):
+            await engine.for_key(f"live-{i}").try_acquire(timeout=0)
+
+        results = [await engine.for_key(f"new-{i}").try_acquire(timeout=0) for i in range(6)]
+
+        # all overflow keys draw from one shared budget of `limit`, however many keys are minted
+        assert results == [True, True, False, False, False, False]
+        assert engine.for_key("new-0") is engine.for_key("new-99")
+
+    async def test_expired_entries_are_reclaimed_so_new_keys_get_their_own_budget(self):
+        engine = self._engine(limit=1, window_seconds=1)
+        for i in range(5):
+            await engine.for_key(f"old-{i}").try_acquire(timeout=0)
+        await asyncio.sleep(1.1)  # every window has expired
+
+        fresh = engine.for_key("fresh")
+
+        assert fresh.group_id == "login:fresh"
+        assert await fresh.try_acquire(timeout=0) is True
+        assert len(engine._keyed) <= 5
+        assert "old-0" not in engine._keyed
+
+    async def test_only_expired_entries_are_reclaimed(self):
+        engine = self._engine(limit=1, window_seconds=1)
+        live = engine.for_key("live")
+        await live.try_acquire(timeout=0)
+        for i in range(4):
+            engine.for_key(f"idle-{i}")  # created, never used: holds no state
+        await asyncio.sleep(0)
+
+        engine.for_key("newcomer")
+
+        assert engine._keyed.get("live") is live
+        assert await live.try_acquire(timeout=0) is False
+
+    async def test_a_limiter_holding_a_concurrency_slot_is_not_reclaimed(self):
+        engine = self._engine(
+            limit=None, window_seconds=None, rate_per_second=None, max_concurrent=1
+        )
+        holder = engine.for_key("holder")
+        await holder.acquire()  # holds the only slot, no timestamps
+
+        for i in range(10):
+            engine.for_key(f"x-{i}")
+
+        assert engine._keyed.get("holder") is holder
+
+    async def test_token_bucket_idle_after_its_interval(self):
+        engine = self._engine(limit=None, window_seconds=None, rate_per_second=20.0)
+        keyed_limiter = engine.for_key("a")
+        await keyed_limiter.acquire()
+        assert keyed_limiter.is_idle() is False
+        await asyncio.sleep(0.1)
+        assert keyed_limiter.is_idle() is True
+
+    async def test_reset_also_resets_the_overflow_budget(self):
+        engine = self._engine(limit=1)
+        for i in range(5):
+            await engine.for_key(f"live-{i}").try_acquire(timeout=0)
+        overflow = engine.for_key("over")
+        assert await overflow.try_acquire(timeout=0) is True
+        assert await overflow.try_acquire(timeout=0) is False
+
+        await engine.reset()
+
+        assert await engine.for_key("over").try_acquire(timeout=0) is True
+
+    def test_cap_is_configurable_and_validated(self):
+        assert MemoryRateLimiter("a", rate_per_second=1.0)._max_keyed == 10_000
+        assert MemoryRateLimiter("a", rate_per_second=1.0, max_keyed_limiters=7)._max_keyed == 7
+        with pytest.raises(ValueError):
+            MemoryRateLimiter("a", rate_per_second=1.0, max_keyed_limiters=0)
+
+    def test_cap_comes_from_the_store_configuration(self):
+        configure_store("capped", strategy="memory", max_keyed_limiters=3)
+        configure_limiter("api", store_id="capped", rate_per_second=1.0)
+
+        assert get_limiter("api")._max_keyed == 3

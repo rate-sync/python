@@ -68,11 +68,15 @@ class MemoryRateLimiter(RateLimiter):
         _metrics: Observability metrics
     """
 
-    #: Per-key limiters (see ``for_key``) kept per engine. The state of a key lives in its own
-    #: instance, so the cache is the memory of the limit; the bound keeps a flood of distinct keys
-    #: from growing it without end. The least recently used key is dropped first and starts a
-    #: fresh window if it comes back, which is acceptable for an engine that is single-process.
+    #: Default cap on per-key limiters (see ``for_key``) held by one engine. The state of a key
+    #: lives in its own instance, so the cache IS the memory of the limit. The cap keeps a flood
+    #: of distinct keys from growing it without end, and the cache never drops an entry that still
+    #: holds live state (that would let a limited caller refresh its own budget by minting keys).
+    #: Configure per store with ``max_keyed_limiters``.
     MAX_KEYED_LIMITERS: int = 10_000
+
+    #: At the cap, entries whose window has fully expired are reclaimed, at most this often.
+    KEYED_RECLAIM_INTERVAL_S: float = 1.0
 
     def __init__(
         self,
@@ -83,6 +87,7 @@ class MemoryRateLimiter(RateLimiter):
         max_concurrent: int | None = None,
         default_timeout: float | None = None,
         fail_closed: bool = False,
+        max_keyed_limiters: int | None = None,
     ) -> None:
         """Initialize memory rate limiter.
 
@@ -95,6 +100,8 @@ class MemoryRateLimiter(RateLimiter):
             default_timeout: Default timeout in seconds for acquire operations
             fail_closed: If True, blocks on backend failure. For memory engine,
                         this is a no-op since there's no external backend.
+            max_keyed_limiters: Cap on per-key limiters held by ``for_key`` (default
+                        ``MAX_KEYED_LIMITERS``). See ``for_key`` for what happens at the cap.
 
         Raises:
             ValueError: If neither rate_per_second nor (limit + window_seconds) is specified
@@ -134,6 +141,9 @@ class MemoryRateLimiter(RateLimiter):
         if max_concurrent is not None and max_concurrent <= 0:
             raise ValueError(f"max_concurrent must be > 0, got {max_concurrent}")
 
+        if max_keyed_limiters is not None and max_keyed_limiters <= 0:
+            raise ValueError(f"max_keyed_limiters must be > 0, got {max_keyed_limiters}")
+
         self._group_id = group_id
         self._rate_per_second = rate_per_second
         self._limit = limit
@@ -164,6 +174,11 @@ class MemoryRateLimiter(RateLimiter):
         self._initialized = False
         self._metrics = RateLimiterMetrics()
         self._keyed: OrderedDict[str, MemoryRateLimiter] = OrderedDict()
+        self._max_keyed = (
+            max_keyed_limiters if max_keyed_limiters is not None else self.MAX_KEYED_LIMITERS
+        )
+        self._overflow: MemoryRateLimiter | None = None
+        self._next_reclaim = 0.0
 
     @classmethod
     def from_config(
@@ -199,6 +214,7 @@ class MemoryRateLimiter(RateLimiter):
             max_concurrent=max_concurrent,
             default_timeout=default_timeout,
             fail_closed=fail_closed,
+            max_keyed_limiters=config.max_keyed_limiters,
         )
 
     async def initialize(self) -> None:
@@ -212,17 +228,40 @@ class MemoryRateLimiter(RateLimiter):
         """Return the independent limiter for one key (see ``RateLimiter.for_key``).
 
         The state of a memory limiter lives in the instance, so unlike the pooled engines each key
-        gets its own instance. Instances are cached per engine, up to ``MAX_KEYED_LIMITERS``, least
-        recently used dropped first. Repeated calls with the same key return the same object while
-        it is cached. No connection exists, so nothing here can leak one.
+        gets its own instance, cached per engine. Repeated calls with the same key return the same
+        object while it is cached. No connection exists, so nothing here can leak one.
+
+        The cache holds at most ``max_keyed_limiters`` entries (default 10,000) and **never
+        forgets live state**: dropping a key that still has timestamps in its window, a recent
+        token-bucket acquisition or a held concurrency slot would give its caller a fresh budget,
+        which a caller could force by minting keys. At the cap:
+
+        1. Entries whose state has fully expired (see ``is_idle``) are reclaimed, scanned at most
+           once per ``KEYED_RECLAIM_INTERVAL_S``. They are indistinguishable from a new instance,
+           so nothing is lost.
+        2. If the cap is still reached, keys that are not cached share ONE overflow limiter with
+           the base configuration (group ``"{group_id}:*overflow*"``): together they get the
+           budget of a single key, they cannot raise it by minting more keys, and no older key is
+           touched. Its ``group_id`` differs from ``"{group_id}:{identifier}"``. A key already
+           cached keeps its own limiter, and gets a place again once entries expire.
         """
         held = self._keyed.get(identifier)
         if held is not None:
             self._keyed.move_to_end(identifier)
             return held
 
+        if len(self._keyed) >= self._max_keyed:
+            self._reclaim_idle_keyed()
+            if len(self._keyed) >= self._max_keyed:
+                return self._overflow_limiter()
+
+        clone = self._new_keyed(identifier)
+        self._keyed[identifier] = clone
+        return clone
+
+    def _new_keyed(self, suffix: str) -> "MemoryRateLimiter":
         clone = type(self)(
-            group_id=f"{self._group_id}:{identifier}",
+            group_id=f"{self._group_id}:{suffix}",
             rate_per_second=self._rate_per_second,
             limit=self._limit,
             window_seconds=self._window_seconds,
@@ -231,10 +270,43 @@ class MemoryRateLimiter(RateLimiter):
             fail_closed=self._fail_closed,
         )
         clone._initialized = True  # the memory engine's initialize() is only this flag
-        self._keyed[identifier] = clone
-        while len(self._keyed) > self.MAX_KEYED_LIMITERS:
-            self._keyed.popitem(last=False)
         return clone
+
+    def _overflow_limiter(self) -> "MemoryRateLimiter":
+        if self._overflow is None:
+            self._overflow = self._new_keyed("*overflow*")
+        return self._overflow
+
+    def _reclaim_idle_keyed(self) -> None:
+        """Drop per-key limiters whose state has fully expired (rate limited to one scan/interval)."""
+        monotonic_now = time.monotonic()
+        if monotonic_now < self._next_reclaim:
+            return
+        self._next_reclaim = monotonic_now + self.KEYED_RECLAIM_INTERVAL_S
+        now = time.time()
+        for key in [k for k, v in self._keyed.items() if v.is_idle(now)]:
+            del self._keyed[key]
+
+    def is_idle(self, now: float | None = None) -> bool:
+        """True when this limiter holds no live state, so a fresh instance would behave the same.
+
+        That is: no acquisition still inside the window (sliding window) or inside the token
+        interval (token bucket), no concurrency slot held, and no acquisition in progress.
+        """
+        now = time.time() if now is None else now
+        if self._lock.locked():
+            return False
+        if self._semaphore is not None and self._max_concurrent is not None:
+            if self._semaphore._value < self._max_concurrent:
+                return False
+        if not self._timestamps:
+            return True
+        last = self._timestamps[-1]
+        if self._algorithm == "sliding_window":
+            return self._window_seconds is None or last <= now - self._window_seconds
+        if self._interval is None:
+            return True
+        return now - last >= self._interval
 
     async def _acquire_rate_slot(self) -> float:
         """Acquire rate limiting slot (throughput control).
@@ -683,6 +755,8 @@ class MemoryRateLimiter(RateLimiter):
         # Per-key limiters (see for_key) are part of this limiter's family.
         for keyed in list(self._keyed.values()):
             await keyed.reset()
+        if self._overflow is not None:
+            await self._overflow.reset()
 
         async with self._lock:
             self._timestamps.clear()

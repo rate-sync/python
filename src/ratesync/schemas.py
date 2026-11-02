@@ -23,9 +23,14 @@ class MemoryEngineConfig:
 
     Attributes:
         engine: Engine identifier (always "memory")
+        max_keyed_limiters: Cap on per-key limiters one limiter holds for
+            ``get_keyed_limiter`` / ``get_or_clone_limiter``. Entries with live state are never
+            dropped; at the cap, new keys share one overflow budget (see
+            ``MemoryRateLimiter.for_key``).
     """
 
     engine: Literal["memory"] = "memory"
+    max_keyed_limiters: int = 10_000
 
 
 @dataclass

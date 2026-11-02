@@ -105,11 +105,32 @@ the backend with `self`.
   scripts. Its `initialize()` delegates to the root and adopts the backend references (so a copy
   created before the root finished initializing heals itself instead of opening a second pool).
   Its `disconnect()` only detaches the copy and never closes the shared backend.
-- Memory: the instance keeps a bounded LRU of independent clones built from its public
-  properties, at most `MemoryRateLimiter.MAX_KEYED_LIMITERS` (10,000) per base, oldest evicted.
-  An evicted window restarts, harmless for an engine that is single-process by definition. The
-  clones are initialized on creation (the memory `initialize()` is only a flag).
+- Memory: the instance keeps a cache of independent clones built from its public properties
+  (see D2a for the cap and what happens at it). The clones are initialized on creation (the memory
+  `initialize()` is only a flag).
 - `for_key` is synchronous and does no I/O.
+
+D2a. The memory key cache never forgets live state (no rate-limit bypass by eviction). A plain LRU
+is unsafe: minting `cap` distinct keys evicts older keys that still hold live state, so a limited
+caller refreshes its own budget (and any keyed victim loses its history). The memory engine can be
+a production choice in a single-process service, so this is treated as a defect, not as "dev only".
+
+- Cap: `max_keyed_limiters`, default 10,000, a `MemoryRateLimiter` constructor argument and a field
+  of the memory store configuration (`[stores.x] engine = "memory"`, `max_keyed_limiters = N`).
+  Must be greater than 0.
+- Reclaim: at the cap, entries that hold no live state are dropped (`MemoryRateLimiter.is_idle`: no
+  timestamp inside the sliding window, no acquisition inside the token-bucket interval, no held
+  concurrency slot, no acquisition in progress). Such an entry is indistinguishable from a new
+  instance, so reclaiming it changes nothing. The scan runs at most once per
+  `KEYED_RECLAIM_INTERVAL_S` (1 s), so a flood cannot turn each request into an O(cap) scan.
+- Overflow: when the cap is reached and nothing is reclaimable, keys that are not cached share
+  ONE overflow limiter with the base configuration (`group_id` `"{group_id}:*overflow*"`). Together
+  they get the budget of a single key, so minting more keys cannot raise it, and no older key is
+  touched. Chosen over failing closed for new keys because it keeps the service answering (a
+  legitimate new caller is limited, not refused outright) while still bounding what a flood can
+  take. A key already cached keeps its own limiter and a new key gets its own again as soon as
+  entries expire.
+- `reset()` resets the cached keys and the overflow limiter.
 
 D3. Initialization and outage behaviour of `get_keyed_limiter` (the registry-level function):
 
@@ -142,8 +163,8 @@ leaking for every engine that supports `for_key`:
 Observable differences, all documented in the changelog: after `get_or_clone_limiter`, the dynamic
 id is no longer in `list_limiters()` / `has_limiter()` / `get_limiter()` (it was never documented
 as a registration API); on pooled engines the returned object is transient and its metrics cover
-only that object; on the memory engine an identifier idle long enough to be evicted from the LRU
-starts a fresh window.
+only that object; on the memory engine, at the cap with every entry live, new keys share one overflow
+budget (D2a) and their `group_id` is the overflow one.
 
 D6. `clone_limiter(source, new_id, **overrides)` keeps registering. It is the explicit API to
 create a named variant of a limiter (for example `payments` -> `payments-premium` with a different
@@ -168,7 +189,7 @@ D9. Version: minor bump, `0.4.2 -> 0.5.0`. New public API and a changed side eff
 
 - Changing any rate, window, key format or default.
 - Pool sharing between registered limiters of the same store (option C).
-- A public `close_keyed_limiters()` (nothing is cached for pooled engines; the memory LRU is
+- A public `close_keyed_limiters()` (nothing is cached for pooled engines; the memory cache is
   per-engine and dies with it).
 - Changing `fail_closed` semantics.
 
@@ -184,7 +205,7 @@ D9. Version: minor bump, `0.4.2 -> 0.5.0`. New public API and a changed side eff
 | AC6 | Real Redis: a view and a legacy clone of the same identifier consume the same key | `tests/integration/test_keyed_limiters_redis.py` |
 | AC7 | Concurrent first use opens one pool; an outage retries at most once per interval; `fail_closed` re-raises during the interval | `::test_concurrent_first_use_opens_one_pool`, `::test_outage_*` |
 | AC8 | `disconnect()` on a view never closes the shared backend; a view created before the root initialized heals itself | `::test_view_disconnect_is_a_noop_on_the_backend`, `::test_view_created_early_adopts_the_backend` |
-| AC9 | The memory LRU is bounded, evicts the oldest entry and keeps one instance per identifier | `::test_memory_lru_is_bounded` |
+| AC9 | The memory cache is bounded; a key at its limit stays limited after the cap is flooded with live keys; only expired entries are reclaimed; overflow keys share one budget; the cap is configurable | `tests/test_keyed_limiters.py::TestMemoryKeyCacheNeverForgetsLiveState` |
 | AC10 | An engine without `for_key` raises `UnsupportedLimiterEngineError`, and `get_or_clone_limiter` falls back to the legacy path for it | `::test_unsupported_engine_*` |
 | AC11 | `get_or_clone_limiter` honors an explicitly registered `"{base}:{id}"` limiter | `::test_get_or_clone_honors_registered_override` |
 | AC12 | Integrations (`@rate_limited` template, dependency, middleware, composite) register no limiter per identifier and keep their behaviour | existing suites plus `::test_integrations_do_not_register_per_identifier_limiters` |

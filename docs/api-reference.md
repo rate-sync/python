@@ -111,7 +111,7 @@ configure_limiter(
 
 The limiter for one caller-supplied value (user, client address, e-mail, tenant, token hash) under a configured limiter. **Use this for any per-caller limit.** Added in 0.5.0.
 
-The identifier is only a key: the limiter definition keeps one engine and so one connection pool, and the returned limiter shares it. The number of backend connections does not depend on the number of identifiers, and nothing is registered or cached per identifier on Redis and PostgreSQL. The memory engine keeps its state in the instance, so it keeps one instance per identifier in a bounded LRU (`MemoryRateLimiter.MAX_KEYED_LIMITERS`, 10,000 by default, least recently used dropped first).
+The identifier is only a key: the limiter definition keeps one engine and so one connection pool, and the returned limiter shares it. The number of backend connections does not depend on the number of identifiers, and nothing is registered or cached per identifier on Redis and PostgreSQL. The memory engine keeps its state in the instance, so it keeps one instance per identifier, capped by `max_keyed_limiters` (10,000 by default, a memory store setting). An entry is dropped only when its state has fully expired; a key with live state is never forgotten, so minting keys cannot refresh a budget. If the cap is reached with every entry live, the keys that are not cached share one overflow limiter (the budget of a single key) whose `group_id` is `{limiter_id}:*overflow*`.
 
 ```python
 async def get_keyed_limiter(limiter_id: str, identifier: str) -> RateLimiter
