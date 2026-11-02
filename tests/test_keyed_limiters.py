@@ -15,6 +15,7 @@ fails here without needing a server.
 from __future__ import annotations
 
 import asyncio
+import logging
 from unittest.mock import AsyncMock, patch
 
 import pytest
@@ -685,13 +686,13 @@ class TestMemoryKeyCacheNeverForgetsLiveState:
         assert len(engine._keyed) <= 5
 
     async def test_overflow_keys_share_one_budget(self):
-        engine = self._engine(limit=2)
+        engine = self._engine(limit=2, keyed_overflow_buckets=1)
         for i in range(5):
             await engine.for_key(f"live-{i}").try_acquire(timeout=0)
 
         results = [await engine.for_key(f"new-{i}").try_acquire(timeout=0) for i in range(6)]
 
-        # all overflow keys draw from one shared budget of `limit`, however many keys are minted
+        # with one bucket all overflow keys draw from one budget of `limit`, however many are minted
         assert results == [True, True, False, False, False, False]
         assert engine.for_key("new-0") is engine.for_key("new-99")
 
@@ -742,7 +743,7 @@ class TestMemoryKeyCacheNeverForgetsLiveState:
         assert keyed_limiter.is_idle() is True
 
     async def test_reset_also_resets_the_overflow_budget(self):
-        engine = self._engine(limit=1)
+        engine = self._engine(limit=1, keyed_overflow_buckets=1)
         for i in range(5):
             await engine.for_key(f"live-{i}").try_acquire(timeout=0)
         overflow = engine.for_key("over")
@@ -764,3 +765,161 @@ class TestMemoryKeyCacheNeverForgetsLiveState:
         configure_limiter("api", store_id="capped", rate_per_second=1.0)
 
         assert get_limiter("api")._max_keyed == 3
+
+
+class TestMemoryOverflowPolicy:
+    """What happens to uncached keys when the cap is full of live keys (spec D2a)."""
+
+    def _full(self, **kwargs) -> MemoryRateLimiter:
+        kwargs.setdefault("limit", 2)
+        kwargs.setdefault("window_seconds", 60)
+        kwargs.setdefault("max_keyed_limiters", 3)
+        engine = MemoryRateLimiter("login", **kwargs)
+        engine.KEYED_RECLAIM_INTERVAL_S = 0.0
+        return engine
+
+    async def _fill(self, engine: MemoryRateLimiter) -> list[RateLimiter]:
+        live = []
+        for i in range(engine._max_keyed):
+            limiter = engine.for_key(f"live-{i}")
+            await limiter.try_acquire(timeout=0)
+            live.append(limiter)
+        return live
+
+    async def test_default_policy_is_shared_and_sharded(self):
+        engine = self._full()
+
+        assert engine._keyed_overflow == "shared"
+        assert engine._keyed_overflow_buckets == 16
+
+    async def test_shared_spreads_new_keys_over_several_buckets(self):
+        engine = self._full(limit=1, keyed_overflow_buckets=8)
+        await self._fill(engine)
+
+        limiters = {engine.for_key(f"new-{i}").group_id for i in range(200)}
+
+        assert 2 < len(limiters) <= 8
+        assert all(group.startswith("login:*overflow-") for group in limiters)
+
+    async def test_shared_a_flood_does_not_collapse_every_new_key_into_one_budget(self):
+        engine = self._full(limit=1, keyed_overflow_buckets=64)
+        await self._fill(engine)
+
+        admitted = 0
+        for i in range(300):
+            if await engine.for_key(f"new-{i}").try_acquire(timeout=0):
+                admitted += 1
+
+        # one budget per bucket (1 each): many callers still get through, but a flood is bounded
+        assert 20 <= admitted <= 64
+
+    async def test_the_same_key_always_maps_to_the_same_bucket(self):
+        engine = self._full(limit=1)
+        await self._fill(engine)
+
+        assert engine.for_key("someone") is engine.for_key("someone")
+
+    async def test_shared_never_touches_live_keys(self):
+        engine = self._full(limit=1)
+        live = await self._fill(engine)
+
+        for i in range(100):
+            await engine.for_key(f"new-{i}").try_acquire(timeout=0)
+
+        assert [engine.for_key(f"live-{i}") for i in range(3)] == live
+        for item in live:
+            assert await item.try_acquire(timeout=0) is False
+
+    async def test_reject_refuses_new_keys_and_keeps_live_ones(self):
+        engine = self._full(keyed_overflow="reject")
+        live = await self._fill(engine)
+
+        refused = engine.for_key("stranger")
+
+        assert await refused.try_acquire(timeout=0) is False
+        with pytest.raises(RateLimiterAcquisitionError):
+            await refused.acquire()
+        state = await refused.get_state()
+        assert state.allowed is False and state.remaining == 0
+        assert engine.for_key("live-0") is live[0]
+
+    async def test_allow_lets_new_keys_through_and_keeps_live_ones(self):
+        engine = self._full(limit=1, keyed_overflow="allow")
+        live = await self._fill(engine)
+
+        results = [await engine.for_key("stranger").try_acquire(timeout=0) for _ in range(5)]
+
+        assert results == [True] * 5  # documented fail-open: no budget at all for uncached keys
+        assert len(engine._keyed) == 3
+        assert engine.for_key("live-0") is live[0]
+
+    async def test_an_overflow_key_gets_its_own_budget_back_once_entries_expire(self):
+        engine = self._full(limit=1, window_seconds=1)
+        await self._fill(engine)
+        assert engine.for_key("late").group_id.startswith("login:*overflow-")
+        await asyncio.sleep(1.1)
+
+        assert engine.for_key("late").group_id == "login:late"
+
+    async def test_invalid_policy_and_bucket_count_are_refused(self):
+        with pytest.raises(ValueError, match="keyed_overflow"):
+            MemoryRateLimiter("a", rate_per_second=1.0, keyed_overflow="nope")
+        with pytest.raises(ValueError, match="keyed_overflow_buckets"):
+            MemoryRateLimiter("a", rate_per_second=1.0, keyed_overflow_buckets=0)
+
+    async def test_policy_comes_from_the_store_configuration(self):
+        configure_store("cfg", strategy="memory", keyed_overflow="reject", keyed_overflow_buckets=4)
+        configure_limiter("api", store_id="cfg", rate_per_second=1.0)
+
+        engine = get_limiter("api")
+
+        assert engine._keyed_overflow == "reject"
+        assert engine._keyed_overflow_buckets == 4
+
+    async def test_overflow_is_counted_and_warned_about_once_per_interval(self, caplog):
+        engine = self._full()
+        await self._fill(engine)
+        now = [1000.0]
+
+        with (
+            caplog.at_level(logging.WARNING, logger="ratesync.engines.memory"),
+            patch("ratesync.engines.memory.time.monotonic", lambda: now[0]),
+        ):
+            for i in range(50):
+                engine.for_key(f"new-{i}")
+            first_interval = [r for r in caplog.records if "max_keyed_limiters" in r.message]
+            now[0] += engine.KEYED_OVERFLOW_WARN_INTERVAL_S + 1
+            engine.for_key("again")
+            second_interval = [r for r in caplog.records if "max_keyed_limiters" in r.message]
+
+        assert engine.keyed_overflow_count == 51
+        assert len(first_interval) == 1
+        assert "login" in first_interval[0].message and "shared" in first_interval[0].message
+        assert len(second_interval) == 2
+        assert "50" in second_interval[1].message or "51" in second_interval[1].message
+
+    async def test_overflow_increments_the_prometheus_counter(self):
+        from ratesync.contrib.prometheus import metrics
+
+        calls: list[tuple[str, str]] = []
+
+        class FakeCounter:
+            def labels(self, **labels):
+                calls.append((labels["group_id"], labels["policy"]))
+                return self
+
+            def inc(self) -> None:
+                pass
+
+        engine = self._full(keyed_overflow="reject")
+        await self._fill(engine)
+        saved = (metrics._state.initialized, metrics._state.keyed_overflow)
+        metrics._state.initialized = True
+        metrics._state.keyed_overflow = FakeCounter()
+        try:
+            for i in range(3):
+                engine.for_key(f"new-{i}")
+        finally:
+            metrics._state.initialized, metrics._state.keyed_overflow = saved
+
+        assert calls == [("login", "reject")] * 3

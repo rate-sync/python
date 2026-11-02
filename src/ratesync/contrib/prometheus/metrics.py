@@ -11,6 +11,7 @@ Metrics:
     ratesync_redis_operation_duration_seconds: Histogram of Redis operation latencies
     ratesync_circuit_breaker_state: Gauge of circuit breaker state (0=closed, 1=half_open, 2=open)
     ratesync_fallback_activations_total: Counter of fallback activations
+    ratesync_keyed_overflow_total: Counter of keys served by the memory engine's overflow policy
 """
 
 from __future__ import annotations
@@ -84,6 +85,7 @@ class _MetricsState:
         self.redis_duration: Histogram | None = None
         self.circuit_breaker_state: Gauge | None = None
         self.fallback_activations: Counter | None = None
+        self.keyed_overflow: Counter | None = None
 
 
 _state = _MetricsState()
@@ -151,6 +153,13 @@ def _init_metrics() -> None:
         f"{NAMESPACE}_fallback_activations_total",
         "Number of times fallback was activated due to Redis failure",
         ["group_id"],
+    )
+
+    _state.keyed_overflow = counter_cls(
+        f"{NAMESPACE}_keyed_overflow_total",
+        "Keys served by the memory engine overflow policy because max_keyed_limiters was reached "
+        "with every cached key holding live state",
+        ["group_id", "policy"],
     )
 
     _state.initialized = True
@@ -227,3 +236,19 @@ def record_fallback_activation(group_id: str) -> None:
         return
     if _state.fallback_activations is not None:
         _state.fallback_activations.labels(group_id=group_id).inc()
+
+
+def record_keyed_overflow(group_id: str, policy: str) -> None:
+    """Record a key served by the memory engine's overflow policy.
+
+    A rising counter means ``max_keyed_limiters`` is too small for the number of distinct keys
+    with live state (or that keys are being minted on purpose).
+
+    Args:
+        group_id: The rate limiter group identifier
+        policy: The overflow policy in effect ("shared", "reject" or "allow")
+    """
+    if not _state.initialized:
+        return
+    if _state.keyed_overflow is not None:
+        _state.keyed_overflow.labels(group_id=group_id, policy=policy).inc()

@@ -27,10 +27,16 @@ class MemoryEngineConfig:
             ``get_keyed_limiter`` / ``get_or_clone_limiter``. Entries with live state are never
             dropped; at the cap, new keys share one overflow budget (see
             ``MemoryRateLimiter.for_key``).
+        keyed_overflow: What happens to a key that is not cached when the cap is full of keys
+            with live state: ``"shared"`` (default) shares ``keyed_overflow_buckets`` hashed
+            budgets, ``"reject"`` refuses the key, ``"allow"`` lets it through unlimited.
+        keyed_overflow_buckets: Number of hashed budgets for ``keyed_overflow = "shared"``.
     """
 
     engine: Literal["memory"] = "memory"
     max_keyed_limiters: int = 10_000
+    keyed_overflow: Literal["shared", "reject", "allow"] = "shared"
+    keyed_overflow_buckets: int = 16
 
 
 @dataclass

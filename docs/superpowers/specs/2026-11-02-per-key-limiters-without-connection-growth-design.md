@@ -123,13 +123,23 @@ a production choice in a single-process service, so this is treated as a defect,
   concurrency slot, no acquisition in progress). Such an entry is indistinguishable from a new
   instance, so reclaiming it changes nothing. The scan runs at most once per
   `KEYED_RECLAIM_INTERVAL_S` (1 s), so a flood cannot turn each request into an O(cap) scan.
-- Overflow: when the cap is reached and nothing is reclaimable, keys that are not cached share
-  ONE overflow limiter with the base configuration (`group_id` `"{group_id}:*overflow*"`). Together
-  they get the budget of a single key, so minting more keys cannot raise it, and no older key is
-  touched. Chosen over failing closed for new keys because it keeps the service answering (a
-  legitimate new caller is limited, not refused outright) while still bounding what a flood can
-  take. A key already cached keeps its own limiter and a new key gets its own again as soon as
-  entries expire.
+- Overflow: when the cap is reached and nothing is reclaimable, the `keyed_overflow` policy decides
+  for the keys that are not cached (memory ctor argument and memory store setting). No cached key is
+  ever touched, whatever the policy.
+  - `shared` (default): the key is hashed (SHA-256, stable across processes) into one of
+    `keyed_overflow_buckets` (default 16) overflow limiters with the base configuration, group
+    `"{group_id}:*overflow-{n}*"`. Minting more keys cannot raise the total, and a flood does not
+    collapse every new key into one budget. **Residual risk, documented:** an attacker who keeps
+    the cap full of live keys makes new legitimate keys share those buckets (a partial lockout of
+    new callers). The cap must be sized for the real number of live keys.
+  - `reject`: uncached keys get a limiter that refuses every acquire (fail closed). Safest against a
+    flood, and locks out every new key while the cap is full.
+  - `allow`: uncached keys are not limited (fail open). Unsafe where keys are caller-controlled: a
+    flood bypasses the limit. Offered for deployments that prefer availability over the limit.
+  - An overflowed key gets its own limiter again as soon as entries expire.
+  - Observability: a warning (at most once per `KEYED_OVERFLOW_WARN_INTERVAL_S`, 60 s, with the
+    count since the last), `MemoryRateLimiter.keyed_overflow_count`, and the Prometheus counter
+    `ratesync_keyed_overflow_total{group_id,policy}`, so operators raise `max_keyed_limiters`.
 - `reset()` resets the cached keys and the overflow limiter.
 
 D3. Initialization and outage behaviour of `get_keyed_limiter` (the registry-level function):
@@ -205,7 +215,8 @@ D9. Version: minor bump, `0.4.2 -> 0.5.0`. New public API and a changed side eff
 | AC6 | Real Redis: a view and a legacy clone of the same identifier consume the same key | `tests/integration/test_keyed_limiters_redis.py` |
 | AC7 | Concurrent first use opens one pool; an outage retries at most once per interval; `fail_closed` re-raises during the interval | `::test_concurrent_first_use_opens_one_pool`, `::test_outage_*` |
 | AC8 | `disconnect()` on a view never closes the shared backend; a view created before the root initialized heals itself | `::test_view_disconnect_is_a_noop_on_the_backend`, `::test_view_created_early_adopts_the_backend` |
-| AC9 | The memory cache is bounded; a key at its limit stays limited after the cap is flooded with live keys; only expired entries are reclaimed; overflow keys share one budget; the cap is configurable | `tests/test_keyed_limiters.py::TestMemoryKeyCacheNeverForgetsLiveState` |
+| AC9 | The memory cache is bounded; a key at its limit stays limited after the cap is flooded with live keys; only expired entries are reclaimed; the cap is configurable | `tests/test_keyed_limiters.py::TestMemoryKeyCacheNeverForgetsLiveState` |
+| AC9b | Each overflow policy (`shared`, `reject`, `allow`) behaves as specified and never touches a cached key; `shared` spreads keys over hashed buckets; overflow is counted, logged once per interval and exported as a Prometheus counter | `tests/test_keyed_limiters.py::TestMemoryOverflowPolicy` |
 | AC10 | An engine without `for_key` raises `UnsupportedLimiterEngineError`, and `get_or_clone_limiter` falls back to the legacy path for it | `::test_unsupported_engine_*` |
 | AC11 | `get_or_clone_limiter` honors an explicitly registered `"{base}:{id}"` limiter | `::test_get_or_clone_honors_registered_override` |
 | AC12 | Integrations (`@rate_limited` template, dependency, middleware, composite) register no limiter per identifier and keep their behaviour | existing suites plus `::test_integrations_do_not_register_per_identifier_limiters` |

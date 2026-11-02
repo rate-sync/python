@@ -22,10 +22,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   refresh its own budget by minting `cap` distinct keys, so: the cap is `max_keyed_limiters`
   (default 10,000, a `MemoryRateLimiter` argument and a memory store setting); at the cap, only
   entries with no live state (window expired, token interval elapsed, no held concurrency slot) are
-  reclaimed, scanned at most once per second (`MemoryRateLimiter.is_idle`); when nothing is
-  reclaimable, keys that are not cached share one overflow limiter with the base configuration
-  (`group_id` `"{group_id}:*overflow*"`), so a flood of keys can neither raise the budget nor touch
-  an older key.
+  reclaimed, scanned at most once per second (`MemoryRateLimiter.is_idle`). When nothing is
+  reclaimable, the new `keyed_overflow` setting decides for the keys that are not cached, and no
+  cached key is ever touched: `"shared"` (default) hashes them into `keyed_overflow_buckets`
+  (default 16) overflow budgets, group `"{group_id}:*overflow-{n}*"`; `"reject"` refuses them (fail
+  closed); `"allow"` lets them through unlimited (fail open, unsafe for caller-controlled keys).
+  **Lockout risk:** with `shared` or `reject`, someone who keeps the cap full of live keys limits
+  or locks out new legitimate keys, so size `max_keyed_limiters` for your real number of live
+  keys. Operators are told: a warning (at most once per minute, with the count),
+  `MemoryRateLimiter.keyed_overflow_count`, and the Prometheus counter
+  `ratesync_keyed_overflow_total{group_id,policy}`.
   The default on the base class raises `UnsupportedLimiterEngineError`, so existing third-party
   engines keep working and opt in by overriding it.
 - `UnsupportedLimiterEngineError` (a `RateLimiterError` and a `TypeError`): an engine with no
@@ -52,7 +58,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   longer returned by `get_limiter()`, `has_limiter()` or `list_limiters()` (`check_limiter("api:x")`
   and `acquire("api:x")` still resolve it); on Redis and PostgreSQL the returned object can be
   short-lived and its `get_metrics()` covers that object only; on the memory engine, at the cap with
-  every entry live, new keys share one overflow budget.
+  every entry live, uncached keys follow the `keyed_overflow` policy.
 - `clone_limiter` keeps registering (it creates a named variant, with overrides). Its documentation
   now says to use it for a small fixed set of variants and never with caller-supplied values.
 - `X-RateLimit-Remaining` from `RateLimitDependency` and `RateLimitMiddleware` is read from the

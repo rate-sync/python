@@ -10,12 +10,14 @@ Note: This does NOT coordinate across multiple processes or containers.
 """
 
 import asyncio
+import hashlib
+import logging
 import time
 from collections import OrderedDict, deque
 from typing import Callable
 
 from ratesync.core import RateLimiter, RateLimiterMetrics
-from ratesync.exceptions import RateLimiterNotInitializedError
+from ratesync.exceptions import RateLimiterAcquisitionError, RateLimiterNotInitializedError
 from ratesync.schemas import LimiterReadOnlyConfig, LimiterState, MemoryEngineConfig
 
 # Try to import prometheus metrics functions at module level
@@ -23,11 +25,20 @@ try:
     from ratesync.contrib.prometheus.metrics import record_acquisition as _prom_acquisition
     from ratesync.contrib.prometheus.metrics import record_timeout as _prom_timeout
 
+    from ratesync.contrib.prometheus.metrics import record_keyed_overflow as _prom_overflow
+
     _PROM_RECORD_ACQUISITION: Callable[[str, str, float], None] | None = _prom_acquisition
     _PROM_RECORD_TIMEOUT: Callable[[str, str], None] | None = _prom_timeout
+    _PROM_RECORD_OVERFLOW: Callable[[str, str], None] | None = _prom_overflow
 except ImportError:
     _PROM_RECORD_ACQUISITION = None
     _PROM_RECORD_TIMEOUT = None
+    _PROM_RECORD_OVERFLOW = None
+
+logger = logging.getLogger(__name__)
+
+#: Policies for a key that is not cached when the per-key cap is full of live keys.
+KEYED_OVERFLOW_POLICIES = ("shared", "reject", "allow")
 
 
 def _record_acquisition(group_id: str, duration_s: float) -> None:
@@ -78,6 +89,9 @@ class MemoryRateLimiter(RateLimiter):
     #: At the cap, entries whose window has fully expired are reclaimed, at most this often.
     KEYED_RECLAIM_INTERVAL_S: float = 1.0
 
+    #: The overflow path logs a warning at most this often (seconds), with the count since the last.
+    KEYED_OVERFLOW_WARN_INTERVAL_S: float = 60.0
+
     def __init__(
         self,
         group_id: str,
@@ -88,6 +102,8 @@ class MemoryRateLimiter(RateLimiter):
         default_timeout: float | None = None,
         fail_closed: bool = False,
         max_keyed_limiters: int | None = None,
+        keyed_overflow: str = "shared",
+        keyed_overflow_buckets: int = 16,
     ) -> None:
         """Initialize memory rate limiter.
 
@@ -102,6 +118,9 @@ class MemoryRateLimiter(RateLimiter):
                         this is a no-op since there's no external backend.
             max_keyed_limiters: Cap on per-key limiters held by ``for_key`` (default
                         ``MAX_KEYED_LIMITERS``). See ``for_key`` for what happens at the cap.
+            keyed_overflow: Policy for a key that is not cached when the cap is full of keys with
+                        live state: "shared" (default), "reject" or "allow". See ``for_key``.
+            keyed_overflow_buckets: Number of hashed budgets for the "shared" policy (default 16).
 
         Raises:
             ValueError: If neither rate_per_second nor (limit + window_seconds) is specified
@@ -144,6 +163,14 @@ class MemoryRateLimiter(RateLimiter):
         if max_keyed_limiters is not None and max_keyed_limiters <= 0:
             raise ValueError(f"max_keyed_limiters must be > 0, got {max_keyed_limiters}")
 
+        if keyed_overflow not in KEYED_OVERFLOW_POLICIES:
+            raise ValueError(
+                f"keyed_overflow must be one of {KEYED_OVERFLOW_POLICIES}, got {keyed_overflow!r}"
+            )
+
+        if keyed_overflow_buckets <= 0:
+            raise ValueError(f"keyed_overflow_buckets must be > 0, got {keyed_overflow_buckets}")
+
         self._group_id = group_id
         self._rate_per_second = rate_per_second
         self._limit = limit
@@ -177,8 +204,14 @@ class MemoryRateLimiter(RateLimiter):
         self._max_keyed = (
             max_keyed_limiters if max_keyed_limiters is not None else self.MAX_KEYED_LIMITERS
         )
-        self._overflow: MemoryRateLimiter | None = None
+        self._keyed_overflow = keyed_overflow
+        self._keyed_overflow_buckets = keyed_overflow_buckets
+        self._overflow: dict[int, MemoryRateLimiter] = {}
+        self._overflow_refusal: MemoryRateLimiter | None = None
         self._next_reclaim = 0.0
+        self._overflow_count = 0
+        self._overflow_warned_count = 0
+        self._next_overflow_warning = 0.0
 
     @classmethod
     def from_config(
@@ -215,6 +248,8 @@ class MemoryRateLimiter(RateLimiter):
             default_timeout=default_timeout,
             fail_closed=fail_closed,
             max_keyed_limiters=config.max_keyed_limiters,
+            keyed_overflow=config.keyed_overflow,
+            keyed_overflow_buckets=config.keyed_overflow_buckets,
         )
 
     async def initialize(self) -> None:
@@ -239,11 +274,24 @@ class MemoryRateLimiter(RateLimiter):
         1. Entries whose state has fully expired (see ``is_idle``) are reclaimed, scanned at most
            once per ``KEYED_RECLAIM_INTERVAL_S``. They are indistinguishable from a new instance,
            so nothing is lost.
-        2. If the cap is still reached, keys that are not cached share ONE overflow limiter with
-           the base configuration (group ``"{group_id}:*overflow*"``): together they get the
-           budget of a single key, they cannot raise it by minting more keys, and no older key is
-           touched. Its ``group_id`` differs from ``"{group_id}:{identifier}"``. A key already
-           cached keeps its own limiter, and gets a place again once entries expire.
+        2. If the cap is still reached, the ``keyed_overflow`` policy decides for the keys that are
+           not cached. Whatever the policy, no cached key is touched, and a warning (at most once
+           per ``KEYED_OVERFLOW_WARN_INTERVAL_S``), ``keyed_overflow_count`` and the Prometheus
+           counter ``ratesync_keyed_overflow_total`` tell the operator to raise
+           ``max_keyed_limiters``.
+
+           * ``"shared"`` (default): the key is hashed into one of ``keyed_overflow_buckets``
+             overflow limiters (group ``"{group_id}:*overflow-{n}*"``) with the base configuration.
+             Callers that overflow share those budgets, so minting more keys cannot raise the
+             total, but **an attacker who fills the cap with live keys makes new legitimate keys
+             share ``keyed_overflow_buckets`` budgets**: size the cap for your real key count.
+           * ``"reject"``: the key gets a limiter that refuses every acquire (fail closed). Safest
+             against a flood, and it locks out every new key while the cap is full.
+           * ``"allow"``: the key is not limited at all (fail open). Never use it where the keys
+             are caller-controlled: a flood bypasses the limit.
+
+           A key already cached keeps its own limiter, and an overflowed key gets its own again
+           as soon as entries expire.
         """
         held = self._keyed.get(identifier)
         if held is not None:
@@ -253,7 +301,7 @@ class MemoryRateLimiter(RateLimiter):
         if len(self._keyed) >= self._max_keyed:
             self._reclaim_idle_keyed()
             if len(self._keyed) >= self._max_keyed:
-                return self._overflow_limiter()
+                return self._overflow_limiter(identifier)
 
         clone = self._new_keyed(identifier)
         self._keyed[identifier] = clone
@@ -272,10 +320,59 @@ class MemoryRateLimiter(RateLimiter):
         clone._initialized = True  # the memory engine's initialize() is only this flag
         return clone
 
-    def _overflow_limiter(self) -> "MemoryRateLimiter":
-        if self._overflow is None:
-            self._overflow = self._new_keyed("*overflow*")
-        return self._overflow
+    def _overflow_limiter(self, identifier: str) -> "MemoryRateLimiter":
+        """The limiter for a key that did not fit in the cache (see ``for_key``)."""
+        self._note_overflow()
+        if self._keyed_overflow == "reject":
+            if self._overflow_refusal is None:
+                self._overflow_refusal = self._new_refusing("*overflow-rejected*")
+            return self._overflow_refusal
+        if self._keyed_overflow == "allow":
+            return self._new_keyed(identifier)  # not cached: a fresh, unspent budget each time
+        digest = hashlib.sha256(identifier.encode("utf-8", "surrogatepass")).digest()
+        bucket = int.from_bytes(digest[:8], "big") % self._keyed_overflow_buckets
+        limiter = self._overflow.get(bucket)
+        if limiter is None:
+            limiter = self._overflow[bucket] = self._new_keyed(f"*overflow-{bucket}*")
+        return limiter
+
+    def _new_refusing(self, suffix: str) -> "MemoryRateLimiter":
+        clone = _RefusingMemoryRateLimiter(
+            group_id=f"{self._group_id}:{suffix}",
+            rate_per_second=self._rate_per_second,
+            limit=self._limit,
+            window_seconds=self._window_seconds,
+            max_concurrent=self._max_concurrent,
+            default_timeout=self._default_timeout,
+            fail_closed=self._fail_closed,
+        )
+        clone._initialized = True
+        return clone
+
+    def _note_overflow(self) -> None:
+        self._overflow_count += 1
+        if _PROM_RECORD_OVERFLOW is not None:
+            _PROM_RECORD_OVERFLOW(self._group_id, self._keyed_overflow)
+        now = time.monotonic()
+        if now < self._next_overflow_warning:
+            return
+        self._next_overflow_warning = now + self.KEYED_OVERFLOW_WARN_INTERVAL_S
+        since = self._overflow_count - self._overflow_warned_count
+        self._overflow_warned_count = self._overflow_count
+        logger.warning(
+            "Limiter '%s': max_keyed_limiters=%d reached with every cached key holding live "
+            "state; %d key(s) served by the '%s' overflow policy since the last warning. "
+            "Raise max_keyed_limiters on the memory store.",
+            self._group_id,
+            self._max_keyed,
+            since,
+            self._keyed_overflow,
+        )
+
+    @property
+    def keyed_overflow_count(self) -> int:
+        """How many ``for_key`` calls were served by the overflow policy since creation."""
+        return self._overflow_count
 
     def _reclaim_idle_keyed(self) -> None:
         """Drop per-key limiters whose state has fully expired (rate limited to one scan/interval)."""
@@ -755,8 +852,8 @@ class MemoryRateLimiter(RateLimiter):
         # Per-key limiters (see for_key) are part of this limiter's family.
         for keyed in list(self._keyed.values()):
             await keyed.reset()
-        if self._overflow is not None:
-            await self._overflow.reset()
+        for overflow in list(self._overflow.values()):
+            await overflow.reset()
 
         async with self._lock:
             self._timestamps.clear()
@@ -776,3 +873,24 @@ class MemoryRateLimiter(RateLimiter):
         limiter instance has its own isolated state.
         """
         await self.reset()
+
+
+class _RefusingMemoryRateLimiter(MemoryRateLimiter):
+    """Per-key limiter that refuses everything (the "reject" overflow policy)."""
+
+    async def acquire(self) -> None:
+        raise RateLimiterAcquisitionError(
+            f"Per-key limiter capacity reached for '{self._group_id}' (keyed_overflow='reject')",
+            group_id=self._group_id,
+        )
+
+    async def try_acquire(self, timeout: float = 0) -> bool:
+        return False
+
+    async def get_state(self) -> LimiterState:
+        return LimiterState(
+            allowed=False,
+            remaining=0,
+            reset_at=int(time.time() + 1),
+            current_usage=self._limit or 0,
+        )

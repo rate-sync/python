@@ -71,7 +71,9 @@ configure_limiter("dynamic", store_id="prod", rate_per_second=50.0)  # Override/
 | Option | Type | Default | Description |
 |--------|------|---------|-------------|
 | `engine` | `str` | Required | `"memory"` |
-| `max_keyed_limiters` | `int` | `10000` | Cap on per-key limiters one limiter holds for `get_keyed_limiter` / `get_or_clone_limiter`. Entries with live state are never dropped; at the cap, new keys share one overflow budget |
+| `max_keyed_limiters` | `int` | `10000` | Cap on per-key limiters one limiter holds for `get_keyed_limiter` / `get_or_clone_limiter`. Entries with live state are never dropped; at the cap, `keyed_overflow` decides for new keys |
+| `keyed_overflow` | `str` | `"shared"` | At the cap with every key live: `"shared"` (hashed into `keyed_overflow_buckets` shared budgets), `"reject"` (refuse new keys) or `"allow"` (no limit, unsafe for caller-controlled keys) |
+| `keyed_overflow_buckets` | `int` | `16` | Shared budgets for `keyed_overflow = "shared"` |
 
 ```toml
 [stores.dev]
