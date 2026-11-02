@@ -284,3 +284,15 @@ store compliance suite runs against memory, node-redis and ioredis (Redis ones s
 server): burst up to `maxConcurrent`, refusal beyond it with `waitMs` 0, release, per-key slots,
 explicit `ratePerSecond` still limiting, sliding window plus `maxConcurrent`, `getState` free
 slots; plus `RateLimiter`-level tests and a Redis `checkLimit` leak regression.
+
+Validation (added after a security review of the change above): with the 1 req/s default gone, a
+token bucket configured with neither `ratePerSecond` nor `maxConcurrent` would have admitted
+everything, silently. It must not become unlimited, so it is rejected: `RateLimiter` throws
+`ConfigValidationError` at construction (covering `configureLimiter`, `defineConfig`, TOML setup,
+clones and per-key views, which copy a valid base), and the three stores throw on `acquire()` and
+`getState()` through `assertTokenBucketHasGate()` for direct store users. A zero or negative rate
+with no `maxConcurrent` counts as neither. Sliding windows keep their own rule (`limit` and
+`windowSeconds`). Python already rejects the same configuration (`ValueError` in the memory, Redis
+and PostgreSQL engines, covered by `test_memory_engine.py` and `test_redis_engine.py`), so no
+Python change was needed.
+
